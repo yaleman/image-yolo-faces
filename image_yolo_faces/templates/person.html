@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header class="page-header">
+  <div class="page-header-copy">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <ol class="breadcrumb-list">
+        <li class="breadcrumb-item"><a class="breadcrumb-link" href="/">Home</a></li>
+        <li class="breadcrumb-item"><a class="breadcrumb-link" href="/people">People</a></li>
+        <li class="breadcrumb-item" aria-current="page">{{ heading }}</li>
+      </ol>
+    </nav>
+    <h1 class="page-title">{{ heading }}</h1>
+    <p class="page-subtitle">{{ subtitle }}</p>
+  </div>
+  <div class="stats">
+    <div class="stat">{{ face_count }} faces</div>
+    <div class="stat">{{ image_count }} images</div>
+  </div>
+</header>
+
+<section class="panel person-detail">
+  <div class="media-grid">
+    <figure class="media-frame">
+      <figcaption class="section-kicker">Face preview</figcaption>
+      <img class="person-preview-image" src="{{ preview_src }}" alt="Face preview for {{ heading }}">
+    </figure>
+    <div class="person-controls">
+      <div class="stack">
+        <div class="section-kicker">Aliases</div>
+        <div class="body-text">
+          {% if aliases %}
+          {{ aliases | join(', ') }}
+          {% else %}
+          No aliases
+          {% endif %}
+        </div>
+      </div>
+      <form method="post" action="/people/{{ person_id }}" class="stack">
+        <label>
+          Name
+          <input type="text" name="name" value="{{ name_input }}" placeholder="Enter a name">
+        </label>
+        <label>
+          Merge into
+          <select name="merge_into">
+            {% for option in merge_options %}
+            <option value="{{ option.value }}">{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="page-actions">
+          <button class="button" type="submit">Save changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</section>
+
+<section class="panel page-section">
+  <div class="section-header">
+    <h2 class="section-title">Images for this person</h2>
+    <p class="section-subtitle">Select one or more images to split them into a new person.</p>
+  </div>
+  <form method="post" action="/people/{{ person_id }}/split" class="stack">
+    <label>
+      New person name
+      <input type="text" name="new_name" placeholder="Optional name for the new person">
+    </label>
+
+    {% if images %}
+    <div class="selection-grid">
+      {% for image in images %}
+      <label class="selection-card">
+        <input type="checkbox" name="selected_images" value="{{ image.checkbox_value }}">
+        <a class="selection-link" href="{{ image.detail_url }}">
+          <img class="selection-thumb" src="{{ image.preview_src }}" alt="Face preview for {{ image.image_name }}" loading="lazy">
+        </a>
+        <div class="selection-body">
+          <div class="meta">{{ image.image_name }}</div>
+          <h3 class="selection-title">{{ image.face_count }} face(s)</h3>
+          <div class="subtle">Select to split into a new person</div>
+        </div>
+      </label>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">No associated images were found.</div>
+    {% endif %}
+
+    <div class="page-actions">
+      <button class="button" type="submit">Split selected images</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

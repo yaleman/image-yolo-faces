@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header class="page-header">
+  <div class="page-header-copy">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <ol class="breadcrumb-list">
+        <li class="breadcrumb-item"><a class="breadcrumb-link" href="/">Home</a></li>
+        <li class="breadcrumb-item"><a class="breadcrumb-link" href="/">Annotated images</a></li>
+        <li class="breadcrumb-item" aria-current="page">{{ heading }}</li>
+      </ol>
+    </nav>
+    <h1 class="page-title">{{ heading }}</h1>
+    <p class="page-subtitle">{{ subtitle }}</p>
+  </div>
+  <div class="stats">
+    <div class="stat">{{ face_count }} faces</div>
+    <div class="stat">{{ person_count }} people in this image</div>
+  </div>
+</header>
+
+<section class="panel">
+  <div class="media-grid">
+    <figure class="media-frame">
+      <figcaption class="section-kicker">Original</figcaption>
+      <img src="{{ original_src }}" alt="Original image">
+    </figure>
+    <figure class="media-frame">
+      <figcaption class="section-kicker">Annotated</figcaption>
+      <img src="{{ annotated_src }}" alt="Annotated image">
+    </figure>
+  </div>
+</section>
+
+<section class="panel page-section">
+  <div class="section-header">
+    <h2 class="section-title">People on this image</h2>
+    <p class="section-subtitle">Update the name for a person, or merge this cluster into another person if it was misidentified.</p>
+  </div>
+
+  {% if person_groups %}
+  <div class="person-list">
+    {% for person in person_groups %}
+    <article class="person-card">
+      <div class="person-card-header">
+        <div>
+          <h3 class="person-card-title">{{ person.name }} <span class="person-id">#{{ person.person_id }}</span></h3>
+          {% if person.aliases %}
+          <p class="body-text muted">Aliases: {{ person.aliases | join(', ') }}</p>
+          {% endif %}
+        </div>
+        <div class="chip-list">
+          {% for face in person.faces %}
+          {% if face.summary %}
+          <span class="chip">{{ face.summary }}</span>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      <form method="post" action="/images/{{ image_id }}/people/{{ person.person_id }}" class="stack">
+        <div class="form-grid">
+          <label>
+            Person name
+            <input type="text" name="name" value="{{ person.name_input }}" placeholder="Enter a name">
+          </label>
+          <label>
+            Merge into
+            <select name="merge_into">
+              {% for option in person.merge_options %}
+              <option value="{{ option.value }}">{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="page-actions">
+          <button class="button" type="submit">Save changes</button>
+        </div>
+      </form>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">No detected people were linked to this image.</div>
+  {% endif %}
+</section>
+
+<section class="page-actions">
+  <a class="button" href="/">Back to list</a>
+</section>
+{% endblock %}
