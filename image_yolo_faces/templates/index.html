@@ -1,23 +1,19 @@
 {% extends "base.html" %}
 
 {% block content %}
-<header class="page-header">
-  <div class="page-header-copy">
-    <nav class="breadcrumb" aria-label="Breadcrumb">
-      <ol class="breadcrumb-list">
-        <li class="breadcrumb-item"><a class="breadcrumb-link" href="/">Home</a></li>
-        <li class="breadcrumb-item" aria-current="page">Annotated images</li>
-      </ol>
-    </nav>
-    <h1 class="page-title">Annotated images</h1>
-    <p class="page-subtitle">Review faces, name people, and merge mismatched clusters into the correct person.</p>
-  </div>
+<section class="page-toolbar">
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    <ol class="breadcrumb-list">
+      <li class="breadcrumb-item"><a class="breadcrumb-link" href="{{ home_url }}">Home</a></li>
+      <li class="breadcrumb-item" aria-current="page">{% if search_active %}Search{% else %}Annotated images{% endif %}</li>
+    </ol>
+  </nav>
   <div class="stats">
-    <div class="stat">{{ images|length }} images</div>
+    <div class="stat">{{ images|length }}{% if search_active %} / {{ total_image_count }}{% endif %} images</div>
     <div class="stat">{{ face_count }} faces</div>
-    <a class="stat stat-link" href="/people">{{ people_count }} people</a>
+    <a class="stat stat-link" href="{{ people_url }}">{{ people_count }} people</a>
   </div>
-</header>
+</section>
 
 {% if images %}
 <section class="grid">
@@ -41,6 +37,12 @@
   {% endfor %}
 </section>
 {% else %}
-<div class="panel empty-state">No images were found in the report.</div>
+<div class="panel empty-state">
+  {% if search_active %}
+  No images matched "{{ search_query }}".
+  {% else %}
+  No images were found in the report.
+  {% endif %}
+</div>
 {% endif %}
 {% endblock %}

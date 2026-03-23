@@ -18,3 +18,4 @@ annotated/
 photos/
 !photos/.gitkeep
 faces.json
+.playwright-cli/

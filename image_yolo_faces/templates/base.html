@@ -7,6 +7,14 @@
     <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
   </head>
   <body>
+    <header class="site-bar">
+      <form class="search-bar search-bar-global" method="get" action="/">
+        <label class="search-field">
+          <span class="sr-only">Search annotated images</span>
+          <input type="search" name="q" value="{{ search_query }}" placeholder="Search" autocomplete="off">
+        </label>
+      </form>
+    </header>
     <main class="shell">
       {% block content %}{% endblock %}
     </main>

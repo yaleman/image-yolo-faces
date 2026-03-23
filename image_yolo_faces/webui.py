@@ -10,6 +10,7 @@ from hashlib import sha1
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from urllib.parse import urlencode
 
 import click
 import uvicorn
@@ -91,6 +92,14 @@ def media_url_for_paths(route: str, *paths: Path | None) -> str:
     return f"{route}?v={version}"
 
 
+def with_query(url: str, query: str) -> str:
+    cleaned_query = query.strip()
+    if not cleaned_query:
+        return url
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}{urlencode({'q': cleaned_query})}"
+
+
 def face_bbox_area(bbox: list[float]) -> float:
     left, top, right, bottom = bbox
     return max(0.0, right - left) * max(0.0, bottom - top)
@@ -111,7 +120,9 @@ def representative_face_bbox(faces: list[dict[str, Any]]) -> list[float] | None:
             continue
 
         confidence = face.get("confidence")
-        confidence_value = float(confidence) if isinstance(confidence, (int, float)) else -1.0
+        confidence_value = (
+            float(confidence) if isinstance(confidence, (int, float)) else -1.0
+        )
         score = (confidence_value, face_bbox_area(cleaned_bbox))
         if score > best_score:
             best_score = score
@@ -232,15 +243,21 @@ def load_report(report_path: Path) -> dict[str, Any]:
     try:
         raw_report = json.loads(report_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise click.ClickException(f"Report at {report_path} is not valid JSON: {exc}") from exc
+        raise click.ClickException(
+            f"Report at {report_path} is not valid JSON: {exc}"
+        ) from exc
 
     if not isinstance(raw_report, dict):
-        raise click.ClickException(f"Report at {report_path} must contain a JSON object.")
+        raise click.ClickException(
+            f"Report at {report_path} must contain a JSON object."
+        )
 
     return normalize_report(raw_report)
 
 
-def person_display_name(person: dict[str, Any] | None, fallback_id: int | None = None) -> str:
+def person_display_name(
+    person: dict[str, Any] | None, fallback_id: int | None = None
+) -> str:
     if person is None:
         return f"Person {fallback_id}" if fallback_id is not None else "Unknown person"
 
@@ -269,6 +286,65 @@ def person_option_label(person: dict[str, Any]) -> str:
     if name == f"Person {person_id}":
         return name
     return f"{name} (#{person_id})"
+
+
+def person_sort_key(person_id: int, person: dict[str, Any] | None) -> tuple[str, int]:
+    return (person_display_name(person, person_id).casefold(), person_id)
+
+
+def person_search_text(person_id: int, person: dict[str, Any] | None) -> str:
+    if person is None:
+        return str(person_id)
+
+    values = [person_display_name(person, person_id), str(person_id)]
+    aliases = person.get("aliases", [])
+    if isinstance(aliases, list):
+        values.extend(
+            str(alias) for alias in aliases if isinstance(alias, str) and alias.strip()
+        )
+    return " ".join(values).casefold()
+
+
+def image_matches_search(
+    store: ReportStore,
+    entry: dict[str, Any],
+    query: str,
+    person_lookup: dict[int, dict[str, Any]] | None = None,
+) -> bool:
+    cleaned_query = query.strip().casefold()
+    if not cleaned_query:
+        return True
+
+    image_value = entry.get("image")
+    if isinstance(image_value, str) and cleaned_query in image_value.casefold():
+        return True
+
+    image_name = (
+        Path(str(image_value)).name.casefold() if isinstance(image_value, str) else ""
+    )
+    if image_name and cleaned_query in image_name:
+        return True
+
+    faces = entry.get("faces", [])
+    if not isinstance(faces, list):
+        return False
+
+    lookup = person_lookup if person_lookup is not None else store.person_index()
+    seen_person_ids: set[int] = set()
+    for face in faces:
+        if not isinstance(face, dict):
+            continue
+        try:
+            person_id = int(face["person_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if person_id in seen_person_ids:
+            continue
+        seen_person_ids.add(person_id)
+        if cleaned_query in person_search_text(person_id, lookup.get(person_id)):
+            return True
+
+    return False
 
 
 def face_summary(face: dict[str, Any]) -> str:
@@ -371,7 +447,13 @@ class ReportStore:
             group["faces"].append(face)
             group["face_count"] += 1
 
-        return sorted(groups.values(), key=lambda group: (Path(group["image"]).name.lower(), str(group["image"]).lower()))
+        return sorted(
+            groups.values(),
+            key=lambda group: (
+                Path(group["image"]).name.lower(),
+                str(group["image"]).lower(),
+            ),
+        )
 
     def re_render_images(self, image_paths: set[str]) -> None:
         if not image_paths:
@@ -387,7 +469,10 @@ class ReportStore:
                 continue
 
             annotated_value = entry.get("annotated_image")
-            annotated_path = resolve_media_path(self.report_path, annotated_value if isinstance(annotated_value, str) else None)
+            annotated_path = resolve_media_path(
+                self.report_path,
+                annotated_value if isinstance(annotated_value, str) else None,
+            )
             if annotated_path is None:
                 continue
 
@@ -399,7 +484,13 @@ class ReportStore:
             if not isinstance(faces, list):
                 faces = []
 
-            render_faces(original_path, faces, annotated_path, person_labels=person_labels, force=True)
+            render_faces(
+                original_path,
+                faces,
+                annotated_path,
+                person_labels=person_labels,
+                force=True,
+            )
 
     def ensure_annotated_image(self, entry: dict[str, Any]) -> Path | None:
         image_value = entry.get("image")
@@ -421,7 +512,13 @@ class ReportStore:
         if not isinstance(faces, list):
             faces = []
 
-        render_faces(original_path, faces, annotated_path, person_labels=self.display_name_map(), force=True)
+        render_faces(
+            original_path,
+            faces,
+            annotated_path,
+            person_labels=self.display_name_map(),
+            force=True,
+        )
         if annotated_path.exists():
             return annotated_path
         return None
@@ -429,7 +526,9 @@ class ReportStore:
     def rename_person(self, person_id: int, name: str) -> set[str]:
         person = self.person_index().get(person_id)
         if person is None:
-            raise HTTPException(status_code=404, detail=f"Person {person_id} was not found.")
+            raise HTTPException(
+                status_code=404, detail=f"Person {person_id} was not found."
+            )
 
         cleaned_name = name.strip()
         if cleaned_name:
@@ -447,12 +546,20 @@ class ReportStore:
         source = people.get(source_id)
         target = people.get(target_id)
         if source is None:
-            raise HTTPException(status_code=404, detail=f"Person {source_id} was not found.")
+            raise HTTPException(
+                status_code=404, detail=f"Person {source_id} was not found."
+            )
         if target is None:
-            raise HTTPException(status_code=404, detail=f"Person {target_id} was not found.")
+            raise HTTPException(
+                status_code=404, detail=f"Person {target_id} was not found."
+            )
 
-        source_faces = [face for face in source.get("faces", []) if isinstance(face, dict)]
-        target_faces = [face for face in target.get("faces", []) if isinstance(face, dict)]
+        source_faces = [
+            face for face in source.get("faces", []) if isinstance(face, dict)
+        ]
+        target_faces = [
+            face for face in target.get("faces", []) if isinstance(face, dict)
+        ]
         affected_images = {
             str(face["image"])
             for face in source_faces + target_faces
@@ -461,8 +568,12 @@ class ReportStore:
 
         source_name_value = source.get("name")
         target_name_value = target.get("name")
-        source_name = source_name_value.strip() if isinstance(source_name_value, str) else ""
-        target_name = target_name_value.strip() if isinstance(target_name_value, str) else ""
+        source_name = (
+            source_name_value.strip() if isinstance(source_name_value, str) else ""
+        )
+        target_name = (
+            target_name_value.strip() if isinstance(target_name_value, str) else ""
+        )
         if source_name:
             aliases = target.setdefault("aliases", [])
             if target_name:
@@ -476,7 +587,9 @@ class ReportStore:
         target_centroid = target.get("centroid")
         source_centroid = source.get("centroid")
         if isinstance(target_centroid, list) and isinstance(source_centroid, list):
-            target["centroid"] = weighted_centroid(source_centroid, target_centroid, target_count)
+            target["centroid"] = weighted_centroid(
+                source_centroid, target_centroid, target_count
+            )
         target["face_count"] = target_count + source_count
         target["faces"] = target_faces + source_faces
 
@@ -490,39 +603,68 @@ class ReportStore:
                 if isinstance(face, dict) and face.get("person_id") == source_id:
                     face["person_id"] = target_id
 
-        self.report["people"] = [person for person in self.report["people"] if person is not source]
+        self.report["people"] = [
+            person for person in self.report["people"] if person is not source
+        ]
 
         current_next_id = self.report.get("next_person_id")
         if not isinstance(current_next_id, int):
             current_next_id = 1
-        self.report["next_person_id"] = max(current_next_id, max(self.person_index().keys(), default=0) + 1)
+        self.report["next_person_id"] = max(
+            current_next_id, max(self.person_index().keys(), default=0) + 1
+        )
 
         return affected_images
 
-    def split_person_images_to_new_person(self, person_id: int, selected_images: set[str], new_name: str) -> int:
+    def split_person_images_to_new_person(
+        self, person_id: int, selected_images: set[str], new_name: str
+    ) -> int:
         people = self.person_index()
         source = people.get(person_id)
         if source is None:
-            raise HTTPException(status_code=404, detail=f"Person {person_id} was not found.")
+            raise HTTPException(
+                status_code=404, detail=f"Person {person_id} was not found."
+            )
 
-        source_faces = [face for face in source.get("faces", []) if isinstance(face, dict)]
-        source_image_paths = {str(face["image"]) for face in source_faces if isinstance(face.get("image"), str)}
-        selected_images = {image for image in selected_images if image in source_image_paths}
+        source_faces = [
+            face for face in source.get("faces", []) if isinstance(face, dict)
+        ]
+        source_image_paths = {
+            str(face["image"])
+            for face in source_faces
+            if isinstance(face.get("image"), str)
+        }
+        selected_images = {
+            image for image in selected_images if image in source_image_paths
+        }
         if not selected_images:
-            raise HTTPException(status_code=400, detail="Select at least one image to split.")
+            raise HTTPException(
+                status_code=400, detail="Select at least one image to split."
+            )
 
-        moved_faces = [face for face in source_faces if str(face.get("image")) in selected_images]
+        moved_faces = [
+            face for face in source_faces if str(face.get("image")) in selected_images
+        ]
         if not moved_faces:
-            raise HTTPException(status_code=400, detail="No matching faces were found for the selected images.")
+            raise HTTPException(
+                status_code=400,
+                detail="No matching faces were found for the selected images.",
+            )
 
-        remaining_faces = [face for face in source_faces if str(face.get("image")) not in selected_images]
+        remaining_faces = [
+            face
+            for face in source_faces
+            if str(face.get("image")) not in selected_images
+        ]
         current_next_id = self.report.get("next_person_id")
         if not isinstance(current_next_id, int) or current_next_id < 1:
             current_next_id = max(self.person_index().keys(), default=0) + 1
 
         new_person_id = current_next_id
         source_name_value = source.get("name")
-        source_name = source_name_value.strip() if isinstance(source_name_value, str) else ""
+        source_name = (
+            source_name_value.strip() if isinstance(source_name_value, str) else ""
+        )
         cleaned_new_name = new_name.strip()
 
         source_centroid = source.get("centroid")
@@ -530,7 +672,9 @@ class ReportStore:
             "person_id": new_person_id,
             "face_count": len(moved_faces),
             "faces": [],
-            "centroid": list(source_centroid) if isinstance(source_centroid, list) else [],
+            "centroid": list(source_centroid)
+            if isinstance(source_centroid, list)
+            else [],
         }
         if cleaned_new_name:
             new_person["name"] = cleaned_new_name
@@ -548,7 +692,9 @@ class ReportStore:
         source["face_count"] = len(remaining_faces)
 
         if not remaining_faces:
-            self.report["people"] = [person for person in self.report["people"] if person is not source]
+            self.report["people"] = [
+                person for person in self.report["people"] if person is not source
+            ]
         self.report["people"].append(new_person)
         self.report["next_person_id"] = new_person_id + 1
 
@@ -562,13 +708,19 @@ class ReportStore:
             if not isinstance(faces, list):
                 continue
             for face in faces:
-                if isinstance(face, dict) and face.get("person_id") == person_id and str(face.get("image")) in selected_images:
+                if (
+                    isinstance(face, dict)
+                    and face.get("person_id") == person_id
+                    and str(face.get("image")) in selected_images
+                ):
                     face["person_id"] = new_person_id
 
         return new_person_id
 
 
-def build_image_context(store: ReportStore, entry: dict[str, Any], index: int) -> dict[str, Any]:
+def build_image_context(
+    store: ReportStore, entry: dict[str, Any], index: int, query: str = ""
+) -> dict[str, Any]:
     image_value = entry.get("image", "")
     image_id = image_key(image_value)
     annotated_value = entry.get("annotated_image")
@@ -590,9 +742,13 @@ def build_image_context(store: ReportStore, entry: dict[str, Any], index: int) -
 
     person_lookup = store.person_index()
     for person_id in person_ids:
-        summary_parts.append(person_display_name(person_lookup.get(person_id), person_id))
+        summary_parts.append(
+            person_display_name(person_lookup.get(person_id), person_id)
+        )
 
-    annotated_path = resolve_media_path(store.report_path, annotated_value if isinstance(annotated_value, str) else None)
+    annotated_path = resolve_media_path(
+        store.report_path, annotated_value if isinstance(annotated_value, str) else None
+    )
 
     return {
         "index": index,
@@ -601,42 +757,64 @@ def build_image_context(store: ReportStore, entry: dict[str, Any], index: int) -
         "image_value": image_value,
         "face_count": entry.get("face_count", 0),
         "summary": ", ".join(summary_parts) if summary_parts else "Unassigned",
-        "detail_url": f"/images/{image_id}",
-        "annotated_url": media_url(annotated_path, f"/media/annotated/{image_id}") if annotated_path is not None else placeholder_media(image_name),
+        "detail_url": with_query(f"/images/{image_id}", query),
+        "annotated_url": media_url(annotated_path, f"/media/annotated/{image_id}")
+        if annotated_path is not None
+        else placeholder_media(image_name),
         "annotated_exists": annotated_path is not None,
         "annotated_media_url": f"/media/annotated/{image_id}",
         "annotated_note": annotated_value,
     }
 
 
-def build_index_context(store: ReportStore) -> dict[str, Any]:
+def build_index_context(store: ReportStore, query: str = "") -> dict[str, Any]:
     with store.lock:
         images: list[dict[str, Any]] = []
         face_count = 0
+        person_lookup = store.person_index()
         for index, image in enumerate(store.report["images"]):
             if not isinstance(image, dict):
                 continue
             face_value = image.get("face_count", 0)
             if isinstance(face_value, int):
                 face_count += face_value
-            images.append(build_image_context(store, image, index))
+            if image_matches_search(store, image, query, person_lookup):
+                images.append(build_image_context(store, image, index, query))
+
+        total_images = len(store.report["images"])
+        filtered_face_count = 0
+        for image in images:
+            face_value = image.get("face_count", 0)
+            if isinstance(face_value, int):
+                filtered_face_count += face_value
 
         return {
             "title": f"Annotated images - {store.report_path.name}",
             "heading": "Annotated images",
             "subtitle": "Review faces, name people, and merge mismatched clusters into the correct person.",
             "images": images,
-            "face_count": face_count,
+            "face_count": filtered_face_count,
+            "total_face_count": face_count,
             "people_count": len(store.person_index()),
+            "total_image_count": total_images,
+            "search_query": query,
+            "search_active": bool(query.strip()),
+            "home_url": "/",
+            "people_url": with_query("/people", query),
         }
 
 
-def build_people_context(store: ReportStore) -> dict[str, Any]:
+def build_people_context(store: ReportStore, query: str = "") -> dict[str, Any]:
     with store.lock:
         people: list[dict[str, Any]] = []
         face_count = 0
         person_lookup = store.person_index()
-        for index, (person_id, person) in enumerate(sorted(person_lookup.items(), key=lambda item: item[0])):
+        for index, (person_id, person) in enumerate(
+            sorted(
+                person_lookup.items(),
+                key=lambda item: person_sort_key(item[0], item[1]),
+            )
+        ):
             image_groups = store.person_image_groups(person_id)
             face_value = person.get("face_count", len(person.get("faces", [])))
             if isinstance(face_value, int):
@@ -644,7 +822,9 @@ def build_people_context(store: ReportStore) -> dict[str, Any]:
             preview_src = placeholder_media(person_display_name(person, person_id))
             if image_groups:
                 first_group = image_groups[0]
-                preview_path = resolve_media_path(store.report_path, first_group["image"])
+                preview_path = resolve_media_path(
+                    store.report_path, first_group["image"]
+                )
                 preview_src = media_url_for_paths(
                     f"/media/person-preview/{first_group['image_id']}/{person_id}",
                     store.report_path,
@@ -652,16 +832,26 @@ def build_people_context(store: ReportStore) -> dict[str, Any]:
                 )
 
             aliases_value = person.get("aliases", [])
-            aliases = [str(alias) for alias in aliases_value if isinstance(alias, str) and alias.strip()] if isinstance(aliases_value, list) else []
+            aliases = (
+                [
+                    str(alias)
+                    for alias in aliases_value
+                    if isinstance(alias, str) and alias.strip()
+                ]
+                if isinstance(aliases_value, list)
+                else []
+            )
             people.append(
                 {
                     "person_id": person_id,
                     "name": person_display_name(person, person_id),
-                    "face_count": face_value if isinstance(face_value, int) else len(person.get("faces", [])),
+                    "face_count": face_value
+                    if isinstance(face_value, int)
+                    else len(person.get("faces", [])),
                     "image_count": len(image_groups),
                     "aliases": aliases,
                     "preview_src": preview_src,
-                    "detail_url": f"/people/{person_id}",
+                    "detail_url": with_query(f"/people/{person_id}", query),
                     "index": index,
                 }
             )
@@ -673,10 +863,15 @@ def build_people_context(store: ReportStore) -> dict[str, Any]:
             "people": people,
             "face_count": face_count,
             "images_count": len(store.report["images"]),
+            "search_query": query,
+            "home_url": "/",
+            "people_url": with_query("/people", query),
         }
 
 
-def build_person_context(store: ReportStore, person_id: int) -> dict[str, Any]:
+def build_person_context(
+    store: ReportStore, person_id: int, query: str = ""
+) -> dict[str, Any]:
     with store.lock:
         person_lookup = store.person_index()
         person = person_lookup.get(person_id)
@@ -686,7 +881,15 @@ def build_person_context(store: ReportStore, person_id: int) -> dict[str, Any]:
         name = person_display_name(person, person_id)
         name_input = name if name != f"Person {person_id}" else ""
         aliases_value = person.get("aliases", [])
-        aliases = [str(alias) for alias in aliases_value if isinstance(alias, str) and alias.strip()] if isinstance(aliases_value, list) else []
+        aliases = (
+            [
+                str(alias)
+                for alias in aliases_value
+                if isinstance(alias, str) and alias.strip()
+            ]
+            if isinstance(aliases_value, list)
+            else []
+        )
         image_groups = store.person_image_groups(person_id)
         face_count = person.get("face_count", len(person.get("faces", [])))
         if not isinstance(face_count, int):
@@ -705,10 +908,14 @@ def build_person_context(store: ReportStore, person_id: int) -> dict[str, Any]:
         merge_options = [
             {"value": "", "label": "Keep separate"},
         ]
-        for other_id, other_person in sorted(person_lookup.items(), key=lambda item: item[0]):
+        for other_id, other_person in sorted(
+            person_lookup.items(), key=lambda item: person_sort_key(item[0], item[1])
+        ):
             if other_id == person_id:
                 continue
-            merge_options.append({"value": str(other_id), "label": person_option_label(other_person)})
+            merge_options.append(
+                {"value": str(other_id), "label": person_option_label(other_person)}
+            )
 
         image_groups_context: list[dict[str, Any]] = []
         for group in image_groups:
@@ -724,7 +931,7 @@ def build_person_context(store: ReportStore, person_id: int) -> dict[str, Any]:
                         store.report_path,
                         preview_path,
                     ),
-                    "detail_url": f"/images/{group['image_id']}",
+                    "detail_url": with_query(f"/images/{group['image_id']}", query),
                     "checkbox_value": group["image"],
                 }
             )
@@ -742,10 +949,15 @@ def build_person_context(store: ReportStore, person_id: int) -> dict[str, Any]:
             "images": image_groups_context,
             "name": name,
             "name_input": name_input,
+            "search_query": query,
+            "home_url": "/",
+            "people_url": with_query("/people", query),
         }
 
 
-def build_image_detail_context(store: ReportStore, image_id: str) -> dict[str, Any]:
+def build_image_detail_context(
+    store: ReportStore, image_id: str, query: str = ""
+) -> dict[str, Any]:
     with store.lock:
         image_lookup = store.image_index()
         person_lookup = store.person_index()
@@ -770,21 +982,42 @@ def build_image_detail_context(store: ReportStore, image_id: str) -> dict[str, A
                 person_groups.setdefault(person_id, []).append(face)
 
         original_path = Path(image_value)
-        annotated_path = resolve_media_path(store.report_path, entry.get("annotated_image") if isinstance(entry.get("annotated_image"), str) else None)
+        annotated_path = resolve_media_path(
+            store.report_path,
+            entry.get("annotated_image")
+            if isinstance(entry.get("annotated_image"), str)
+            else None,
+        )
         image_name = Path(image_value).name
         original_exists = original_path.exists()
 
         person_groups_context: list[dict[str, Any]] = []
-        for person_id, grouped_faces in sorted(person_groups.items(), key=lambda item: item[0]):
+        for person_id, grouped_faces in sorted(
+            person_groups.items(),
+            key=lambda item: person_sort_key(item[0], person_lookup.get(item[0])),
+        ):
             person = person_lookup.get(person_id)
             display_name = person_display_name(person, person_id)
             aliases_value = person.get("aliases", []) if person is not None else []
-            aliases = [str(alias) for alias in aliases_value if isinstance(alias, str) and alias.strip()] if isinstance(aliases_value, list) else []
+            aliases = (
+                [
+                    str(alias)
+                    for alias in aliases_value
+                    if isinstance(alias, str) and alias.strip()
+                ]
+                if isinstance(aliases_value, list)
+                else []
+            )
             merge_options = [{"value": "", "label": "Keep separate"}]
-            for other_id, other_person in sorted(person_lookup.items(), key=lambda item: item[0]):
+            for other_id, other_person in sorted(
+                person_lookup.items(),
+                key=lambda item: person_sort_key(item[0], item[1]),
+            ):
                 if other_id == person_id:
                     continue
-                merge_options.append({"value": str(other_id), "label": person_option_label(other_person)})
+                merge_options.append(
+                    {"value": str(other_id), "label": person_option_label(other_person)}
+                )
 
             faces_context = []
             for face in grouped_faces:
@@ -800,7 +1033,9 @@ def build_image_detail_context(store: ReportStore, image_id: str) -> dict[str, A
                 {
                     "person_id": person_id,
                     "name": display_name,
-                    "name_input": display_name if display_name != f"Person {person_id}" else "",
+                    "name_input": display_name
+                    if display_name != f"Person {person_id}"
+                    else "",
                     "aliases": aliases,
                     "face_count": len(grouped_faces),
                     "faces": faces_context,
@@ -814,12 +1049,22 @@ def build_image_detail_context(store: ReportStore, image_id: str) -> dict[str, A
             "subtitle": image_value,
             "face_count": entry.get("face_count", 0),
             "person_count": len(person_groups_context),
-            "original_src": media_url(original_path if original_exists else None, f"/media/original/{image_id}") if original_exists else placeholder_media(image_name),
+            "original_src": media_url(
+                original_path if original_exists else None,
+                f"/media/original/{image_id}",
+            )
+            if original_exists
+            else placeholder_media(image_name),
             "original_available": original_exists,
-            "annotated_src": media_url(annotated_path, f"/media/annotated/{image_id}") if annotated_path is not None else placeholder_media(image_name),
+            "annotated_src": media_url(annotated_path, f"/media/annotated/{image_id}")
+            if annotated_path is not None
+            else placeholder_media(image_name),
             "annotated_available": annotated_path is not None,
             "person_groups": person_groups_context,
             "image_id": image_id,
+            "search_query": query,
+            "home_url": "/",
+            "people_url": with_query("/people", query),
         }
 
 
@@ -833,7 +1078,9 @@ def create_app(report_path: Path | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     app.state.store = store
 
-    def update_person_profile(person_id: int, name: str, merge_into: str) -> tuple[int, set[str]]:
+    def update_person_profile(
+        person_id: int, name: str, merge_into: str
+    ) -> tuple[int, set[str]]:
         target_id = person_id
         affected_images: set[str] = set()
 
@@ -842,7 +1089,9 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             try:
                 merge_target_id = int(merge_target)
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail="Merge target must be a person ID.") from exc
+                raise HTTPException(
+                    status_code=400, detail="Merge target must be a person ID."
+                ) from exc
 
             if merge_target_id != person_id:
                 affected_images.update(store.merge_people(person_id, merge_target_id))
@@ -855,23 +1104,23 @@ def create_app(report_path: Path | None = None) -> FastAPI:
         return target_id, affected_images
 
     @app.get("/", response_class=HTMLResponse)
-    def index(request: Request) -> HTMLResponse:
-        context = build_index_context(store)
+    def index(request: Request, q: str = "") -> HTMLResponse:
+        context = build_index_context(store, q)
         return templates.TemplateResponse(request, "index.html", context)
 
     @app.get("/people", response_class=HTMLResponse)
-    def people_index(request: Request) -> HTMLResponse:
-        context = build_people_context(store)
+    def people_index(request: Request, q: str = "") -> HTMLResponse:
+        context = build_people_context(store, q)
         return templates.TemplateResponse(request, "people.html", context)
 
     @app.get("/people/{person_id}", response_class=HTMLResponse)
-    def person_detail(request: Request, person_id: int) -> HTMLResponse:
-        context = build_person_context(store, person_id)
+    def person_detail(request: Request, person_id: int, q: str = "") -> HTMLResponse:
+        context = build_person_context(store, person_id, q)
         return templates.TemplateResponse(request, "person.html", context)
 
     @app.get("/images/{image_id}", response_class=HTMLResponse)
-    def image_detail(request: Request, image_id: str) -> HTMLResponse:
-        context = build_image_detail_context(store, image_id)
+    def image_detail(request: Request, image_id: str, q: str = "") -> HTMLResponse:
+        context = build_image_detail_context(store, image_id, q)
         return templates.TemplateResponse(request, "image.html", context)
 
     @app.get("/media/person-preview/{image_id}/{person_id}")
@@ -902,13 +1151,29 @@ def create_app(report_path: Path | None = None) -> FastAPI:
 
             bbox = representative_face_bbox(person_faces)
             if bbox is None or not image_path.exists():
-                return Response(content=placeholder_svg_bytes(person_display_name(person, person_id)), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+                return Response(
+                    content=placeholder_svg_bytes(
+                        person_display_name(person, person_id)
+                    ),
+                    media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"},
+                )
 
             preview_bytes = preview_image_bytes(image_path, bbox)
             if preview_bytes is None:
-                return Response(content=placeholder_svg_bytes(person_display_name(person, person_id)), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+                return Response(
+                    content=placeholder_svg_bytes(
+                        person_display_name(person, person_id)
+                    ),
+                    media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"},
+                )
 
-            return Response(content=preview_bytes, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+            return Response(
+                content=preview_bytes,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store"},
+            )
 
     @app.get("/media/original/{image_id}")
     def original_media(image_id: str) -> FileResponse:
@@ -923,7 +1188,9 @@ def create_app(report_path: Path | None = None) -> FastAPI:
 
             path = Path(image_value)
             if not path.exists():
-                raise HTTPException(status_code=404, detail="Original image file not found.")
+                raise HTTPException(
+                    status_code=404, detail="Original image file not found."
+                )
 
             return FileResponse(path, headers={"Cache-Control": "no-store"})
 
@@ -936,7 +1203,9 @@ def create_app(report_path: Path | None = None) -> FastAPI:
 
             path = store.ensure_annotated_image(entry)
             if path is None or not path.exists():
-                raise HTTPException(status_code=404, detail="Annotated image file not found.")
+                raise HTTPException(
+                    status_code=404, detail="Annotated image file not found."
+                )
 
             return FileResponse(path, headers={"Cache-Control": "no-store"})
 
@@ -967,7 +1236,9 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             if person_id not in store.person_index():
                 raise HTTPException(status_code=404, detail="Person not found.")
 
-            target_id, affected_images = update_person_profile(person_id, name, merge_into)
+            target_id, affected_images = update_person_profile(
+                person_id, name, merge_into
+            )
             store.save()
             store.re_render_images(affected_images)
 
@@ -984,12 +1255,18 @@ def create_app(report_path: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Person not found.")
 
             source_image_paths = store.image_paths_for_person(person_id)
-            selected_set = {image for image in selected_images if image in source_image_paths}
+            selected_set = {
+                image for image in selected_images if image in source_image_paths
+            }
             if not selected_set:
-                raise HTTPException(status_code=400, detail="Select at least one image to split.")
+                raise HTTPException(
+                    status_code=400, detail="Select at least one image to split."
+                )
 
             affected_images = set(source_image_paths)
-            new_person_id = store.split_person_images_to_new_person(person_id, selected_set, new_name)
+            new_person_id = store.split_person_images_to_new_person(
+                person_id, selected_set, new_name
+            )
             affected_images.update(selected_set)
             affected_images.update(store.image_paths_for_person(new_person_id))
             store.save()
@@ -1009,9 +1286,25 @@ def create_app(report_path: Path | None = None) -> FastAPI:
     show_default=True,
     help="Path to the JSON report to load and update.",
 )
-@click.option("--host", default="127.0.0.1", show_default=True, help="Bind host for the web server.")
-@click.option("--port", default=8000, show_default=True, type=click.IntRange(min=1, max=65535), help="Bind port for the web server.")
-@click.option("--reload/--no-reload", default=False, show_default=True, help="Restart the server when Python files change.")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Bind host for the web server.",
+)
+@click.option(
+    "--port",
+    default=8000,
+    show_default=True,
+    type=click.IntRange(min=1, max=65535),
+    help="Bind port for the web server.",
+)
+@click.option(
+    "--reload/--no-reload",
+    default=False,
+    show_default=True,
+    help="Restart the server when Python files change.",
+)
 def main(report_path: Path, host: str, port: int, reload: bool) -> None:
     resolved_report_path = resolve_report_path(report_path)
     os.environ[REPORT_PATH_ENV] = str(resolved_report_path)

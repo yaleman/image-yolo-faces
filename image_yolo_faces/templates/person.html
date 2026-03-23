@@ -1,17 +1,16 @@
 {% extends "base.html" %}
 
 {% block content %}
-<header class="page-header">
+<header class="page-header page-header-detail">
   <div class="page-header-copy">
     <nav class="breadcrumb" aria-label="Breadcrumb">
       <ol class="breadcrumb-list">
-        <li class="breadcrumb-item"><a class="breadcrumb-link" href="/">Home</a></li>
-        <li class="breadcrumb-item"><a class="breadcrumb-link" href="/people">People</a></li>
+        <li class="breadcrumb-item"><a class="breadcrumb-link" href="{{ home_url }}">Home</a></li>
+        <li class="breadcrumb-item"><a class="breadcrumb-link" href="{{ people_url }}">People</a></li>
         <li class="breadcrumb-item" aria-current="page">{{ heading }}</li>
       </ol>
     </nav>
     <h1 class="page-title">{{ heading }}</h1>
-    <p class="page-subtitle">{{ subtitle }}</p>
   </div>
   <div class="stats">
     <div class="stat">{{ face_count }} faces</div>
