@@ -10,7 +10,6 @@
         <li class="breadcrumb-item" aria-current="page">{{ heading }}</li>
       </ol>
     </nav>
-    <h1 class="page-title">{{ heading }}</h1>
   </div>
   <div class="stats">
     <div class="stat">{{ face_count }} faces</div>
@@ -19,53 +18,38 @@
 </header>
 
 <section class="panel person-detail">
-  <div class="media-grid">
-    <figure class="media-frame">
-      <figcaption class="section-kicker">Face preview</figcaption>
-      <img class="person-preview-image" src="{{ preview_src }}" alt="Face preview for {{ heading }}">
-    </figure>
-    <div class="person-controls">
-      <div class="stack">
-        <div class="section-kicker">Aliases</div>
-        <div class="body-text">
-          {% if aliases %}
-          {{ aliases | join(', ') }}
-          {% else %}
-          No aliases
-          {% endif %}
-        </div>
-      </div>
-      <form method="post" action="/people/{{ person_id }}" class="stack">
-        <label>
-          Name
-          <input type="text" name="name" value="{{ name_input }}" placeholder="Enter a name">
-        </label>
-        <label>
-          Merge into
-          <select name="merge_into">
-            {% for option in merge_options %}
-            <option value="{{ option.value }}">{{ option.label }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <div class="page-actions">
-          <button class="button" type="submit">Save changes</button>
-        </div>
-      </form>
+  <div class="person-controls">
+    <div class="stack">
+      {% if aliases %}
+      <div class="section-kicker">Aliases</div>
+      <div class="body-text">{{ aliases | join(', ') }}</div>
+      {% endif %}
     </div>
+    <form method="post" action="/people/{{ person_id }}" class="stack">
+      <label>
+        Name
+        <input type="text" name="name" value="{{ name_input }}" placeholder="Enter a name">
+      </label>
+      <label>
+        Merge into
+        <select name="merge_into">
+          {% for option in merge_options %}
+          <option value="{{ option.value }}">{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="page-actions">
+        <button class="button" type="submit">Save changes</button>
+      </div>
+    </form>
   </div>
 </section>
 
 <section class="panel page-section">
   <div class="section-header">
-    <h2 class="section-title">Images for this person</h2>
     <p class="section-subtitle">Select one or more images to split them into a new person.</p>
   </div>
   <form method="post" action="/people/{{ person_id }}/split" class="stack">
-    <label>
-      New person name
-      <input type="text" name="new_name" placeholder="Optional name for the new person">
-    </label>
 
     {% if images %}
     <div class="selection-grid">
@@ -86,7 +70,10 @@
     {% else %}
     <div class="empty-state">No associated images were found.</div>
     {% endif %}
-
+    <label>
+      New person name
+      <input type="text" name="new_name" placeholder="Optional name for the new person">
+    </label>
     <div class="page-actions">
       <button class="button" type="submit">Split selected images</button>
     </div>

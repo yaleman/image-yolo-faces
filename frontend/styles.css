@@ -310,10 +310,16 @@ html {
   .media-frame img,
   .person-preview-image {
     border: 1px solid var(--line);
-    @apply block w-full rounded-2xl bg-zinc-950 object-cover;
+    @apply block w-full rounded-2xl bg-zinc-950;
+  }
+
+  .media-frame img {
+    @apply object-contain;
+    max-height: 90vh;
   }
 
   .person-preview-image {
+    @apply object-cover;
     max-height: 50vh;
   }
 

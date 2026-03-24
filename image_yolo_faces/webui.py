@@ -1182,7 +1182,6 @@ def build_index_context(store: ReportStore, query: str = "") -> dict[str, Any]:
 
         return {
             "title": f"Annotated images - {store.report_path.name}",
-            "heading": "Annotated images",
             "subtitle": "Review faces, name people, and merge mismatched clusters into the correct person.",
             "people": people,
             "images": images,
@@ -1261,7 +1260,6 @@ def build_people_context(store: ReportStore, query: str = "") -> dict[str, Any]:
 
         return {
             "title": f"People - {store.report_path.name}",
-            "heading": "People",
             "subtitle": "Open a person to inspect the images associated with them, then rename, merge, or split selections into a new person.",
             "people": people,
             "face_count": face_count,
@@ -1297,16 +1295,6 @@ def build_person_context(
         face_count = person.get("face_count", len(person.get("faces", [])))
         if not isinstance(face_count, int):
             face_count = len(person.get("faces", []))
-
-        preview_src = placeholder_media(name)
-        if image_groups:
-            first_group = image_groups[0]
-            preview_path = resolve_media_path(store.report_path, first_group["image"])
-            preview_src = media_url_for_paths(
-                f"/media/person-preview/{first_group['image_id']}/{person_id}",
-                store.report_path,
-                preview_path,
-            )
 
         merge_options = [
             {"value": "", "label": "Keep separate"},
@@ -1347,7 +1335,6 @@ def build_person_context(
             "face_count": face_count,
             "image_count": len(image_groups_context),
             "aliases": aliases,
-            "preview_src": preview_src,
             "merge_options": merge_options,
             "images": image_groups_context,
             "name": name,
@@ -1450,6 +1437,7 @@ def build_image_detail_context(
                 {
                     "person_id": person_id,
                     "name": display_name,
+                    "detail_url": with_query(f"/people/{person_id}", query),
                     "name_input": display_name
                     if display_name != f"Person {person_id}"
                     else "",
@@ -1607,7 +1595,11 @@ def create_app(report_path: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Image path missing.")
 
             faces = entry.get("faces", [])
-            if not isinstance(faces, list) or face_index < 0 or face_index >= len(faces):
+            if (
+                not isinstance(faces, list)
+                or face_index < 0
+                or face_index >= len(faces)
+            ):
                 return Response(
                     content=placeholder_svg_bytes("Face preview"),
                     media_type="image/svg+xml",
@@ -1636,7 +1628,9 @@ def create_app(report_path: Path | None = None) -> FastAPI:
                     headers={"Cache-Control": "no-store"},
                 )
 
-            preview_bytes = preview_image_bytes(image_path, [float(value) for value in bbox])
+            preview_bytes = preview_image_bytes(
+                image_path, [float(value) for value in bbox]
+            )
             if preview_bytes is None:
                 return Response(
                     content=placeholder_svg_bytes("Face preview"),
