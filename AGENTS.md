@@ -27,6 +27,7 @@ This repository uses a single JSON report as the source of truth for both the CL
 - `faces.json` is the single source of truth for images, faces, people, and report-level configuration.
 - The CLI and web UI both read and write the same report; edits must round-trip through that JSON file rather than a second datastore.
 - Shared ingestion and scan logic lives in package modules, not in the CLI or web entrypoints.
+- Fresh web-loaded reports default to grouped uploads so people are created automatically unless the report explicitly turns grouping off.
 - Image entries include an `added_at` Unix timestamp in nanoseconds plus a `hashes` dictionary. `hashes.sha256` is used for exact duplicate detection, and the schema is kept as a dict for future hash types.
 - Uploaded images are imported into the dataset, renamed on filename collision with a Unix-seconds suffix, scanned for faces immediately, and written back into the report with annotated output.
 - The `/uploads` handler accepts one or more `image` parts, processes them in order, and returns per-file results so the UI can show itemized upload progress.

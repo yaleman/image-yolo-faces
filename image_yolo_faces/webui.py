@@ -447,6 +447,47 @@ def preview_image_bytes(image_path: Path, bbox: list[float]) -> bytes | None:
     return buffer.getvalue()
 
 
+def person_preview_bbox(
+    entry: dict[str, Any], person_id: int, person: dict[str, Any] | None
+) -> list[float] | None:
+    image_value = entry.get("image")
+    if not isinstance(image_value, str):
+        return None
+
+    image_id = image_key(image_value)
+
+    if person is not None:
+        person_faces: list[dict[str, Any]] = []
+        faces = person.get("faces", [])
+        if isinstance(faces, list):
+            for face in faces:
+                if not isinstance(face, dict):
+                    continue
+                face_image = face.get("image")
+                if not isinstance(face_image, str):
+                    continue
+                if image_key(face_image) == image_id:
+                    person_faces.append(face)
+        bbox = representative_face_bbox(person_faces)
+        if bbox is not None:
+            return bbox
+
+    entry_faces = []
+    faces = entry.get("faces", [])
+    if isinstance(faces, list):
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+            try:
+                current_person_id = int(face["person_id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if current_person_id == person_id:
+                entry_faces.append(face)
+
+    return representative_face_bbox(entry_faces)
+
+
 def normalize_person(person: dict[str, Any]) -> None:
     person.setdefault("aliases", [])
     person.setdefault("faces", [])
@@ -458,6 +499,8 @@ def normalize_person(person: dict[str, Any]) -> None:
 
 
 def normalize_report(report: dict[str, Any]) -> dict[str, Any]:
+    report.setdefault("group_by_person", True)
+
     images = report.get("images", [])
     if not isinstance(images, list):
         images = []
@@ -1849,7 +1892,9 @@ def create_app(report_path: Path | None = None) -> FastAPI:
     @app.get("/media/person-preview/{image_id}/{person_id}")
     def person_preview_media(image_id: str, person_id: int) -> Response:
         with store.lock:
-            entry = store.image_index().get(image_id)
+            image_lookup = store.image_index()
+            person_lookup = store.person_index()
+            entry = image_lookup.get(image_id)
             if entry is None:
                 raise HTTPException(status_code=404, detail="Image not found.")
 
@@ -1857,23 +1902,10 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             if not isinstance(image_value, str):
                 raise HTTPException(status_code=404, detail="Image path missing.")
 
-            image_path = Path(image_value)
-            person = store.person_index().get(person_id)
-            person_faces: list[dict[str, Any]] = []
-            faces = entry.get("faces", [])
-            if isinstance(faces, list):
-                for face in faces:
-                    if not isinstance(face, dict):
-                        continue
-                    try:
-                        current_person_id = int(face["person_id"])
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    if current_person_id == person_id:
-                        person_faces.append(face)
-
-            bbox = representative_face_bbox(person_faces)
-            if bbox is None or not image_path.exists():
+            image_path = resolve_media_path(store.report_path, image_value)
+            person = person_lookup.get(person_id)
+            bbox = person_preview_bbox(entry, person_id, person)
+            if bbox is None or image_path is None or not image_path.exists():
                 return Response(
                     content=placeholder_svg_bytes(
                         person_display_name(person, person_id)
@@ -1930,11 +1962,12 @@ def create_app(report_path: Path | None = None) -> FastAPI:
                 )
 
             bbox = face.get("bbox")
-            image_path = Path(image_value)
+            image_path = resolve_media_path(store.report_path, image_value)
             if (
                 not isinstance(bbox, list)
                 or len(bbox) != 4
                 or not all(isinstance(value, int | float) for value in bbox)
+                or image_path is None
                 or not image_path.exists()
             ):
                 return Response(
@@ -1970,8 +2003,8 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             if not isinstance(image_value, str):
                 raise HTTPException(status_code=404, detail="Image path missing.")
 
-            path = Path(image_value)
-            if not path.exists():
+            path = resolve_media_path(store.report_path, image_value)
+            if path is None or not path.exists():
                 raise HTTPException(
                     status_code=404, detail="Original image file not found."
                 )
