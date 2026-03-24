@@ -26,3 +26,4 @@ output/playwright/
 output/python-coverage/
 !image_yolo_faces/static/dist/
 !image_yolo_faces/static/dist/**
+workspaces/

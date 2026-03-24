@@ -1,3 +1,5 @@
+import pytest
+
 from pathlib import Path
 
 from image_yolo_faces.webui import (
@@ -5,6 +7,16 @@ from image_yolo_faces.webui import (
     preview_crop_box,
     representative_face_bbox,
     resolve_media_path,
+)
+from image_yolo_faces.workspaces import (
+    DEFAULT_WORKSPACE_NAME,
+    ensure_workspace_layout,
+    normalize_report_media_paths,
+    resolve_workspaces_root,
+    validate_workspace_name,
+    workspace_annotated_dir,
+    workspace_photos_dir,
+    workspace_report_path,
 )
 
 
@@ -69,3 +81,58 @@ def test_person_preview_bbox_uses_person_annotations_for_the_image() -> None:
     }
 
     assert person_preview_bbox(entry, 34, person) == [20.0, 30.0, 80.0, 90.0]
+
+
+def test_resolve_workspaces_root_uses_the_environment(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FACES_WORKSPACES_DIR", str(tmp_path / "spaces"))
+
+    assert resolve_workspaces_root() == (tmp_path / "spaces").resolve()
+
+
+def test_validate_workspace_name_accepts_simple_names() -> None:
+    assert validate_workspace_name("team_1") == "team_1"
+
+
+@pytest.mark.parametrize("workspace_name", ["team-1", " team", "", "spaces/team"])
+def test_validate_workspace_name_rejects_invalid_names(workspace_name: str) -> None:
+    with pytest.raises(ValueError):
+        validate_workspace_name(workspace_name)
+
+
+def test_ensure_workspace_layout_creates_workspace_directories(tmp_path) -> None:
+    root = tmp_path / "workspaces"
+
+    workspace_dir = ensure_workspace_layout(root, DEFAULT_WORKSPACE_NAME)
+
+    assert workspace_dir == root / DEFAULT_WORKSPACE_NAME
+    assert workspace_photos_dir(root, DEFAULT_WORKSPACE_NAME).is_dir()
+    assert workspace_annotated_dir(root, DEFAULT_WORKSPACE_NAME).is_dir()
+    assert workspace_report_path(root, DEFAULT_WORKSPACE_NAME) == (
+        root / DEFAULT_WORKSPACE_NAME / "faces.json"
+    )
+
+
+def test_normalize_report_media_paths_rewrites_workspace_paths(tmp_path) -> None:
+    root = tmp_path / "workspaces"
+    ensure_workspace_layout(root, DEFAULT_WORKSPACE_NAME)
+
+    image_path = workspace_photos_dir(root, DEFAULT_WORKSPACE_NAME) / "apple.png"
+    image_path.write_bytes(b"image")
+
+    report = {
+        "images": [
+            {
+                "image": str(image_path.resolve()),
+            }
+        ],
+        "people": [
+            {
+                "person_id": 1,
+                "faces": [{"image": str(image_path.resolve())}],
+            }
+        ],
+    }
+
+    assert normalize_report_media_paths(report, root, DEFAULT_WORKSPACE_NAME) is True
+    assert report["images"][0]["image"] == "apple.png"
+    assert report["people"][0]["faces"][0]["image"] == "apple.png"

@@ -10,17 +10,45 @@
   </head>
   <body>
     <header class="site-bar">
-      <form class="search-bar search-bar-global" method="get" action="/">
-        {% if sort_query %}
-        <input type="hidden" name="sort" value="{{ sort_query }}">
-        {% endif %}
-        {% if unnamed_only %}
-        <input type="hidden" name="unnamed" value="1">
-        {% endif %}
-        <label class="search-field">
-          <input type="search" name="q" value="{{ search_query }}" placeholder="Search" autocomplete="off">
-        </label>
-      </form>
+      <div class="site-bar-left">
+        <details class="workspace-switcher">
+          <summary class="workspace-chip">
+            <span class="workspace-chip-label">Workspace</span>
+            <strong class="workspace-chip-value">{{ current_workspace }}</strong>
+            <span class="workspace-chip-caret" aria-hidden="true">▾</span>
+          </summary>
+          <div class="workspace-switcher-panel">
+            <div class="workspace-switcher-list" aria-label="Workspaces">
+              {% for workspace in workspaces %}
+              <form class="workspace-switcher-form" method="post" action="/workspaces/select">
+                <input type="hidden" name="workspace" value="{{ workspace }}">
+                <button class="workspace-switcher-button{% if workspace == current_workspace %} is-active{% endif %}" type="submit"{% if workspace == current_workspace %} aria-current="true" disabled{% endif %}>{{ workspace }}</button>
+              </form>
+              {% endfor %}
+            </div>
+            <form class="workspace-form workspace-create-form" method="post" action="/workspaces/create">
+              <label class="workspace-create">
+                <span class="workspace-field-label">New workspace</span>
+                <input type="text" name="workspace" placeholder="workspace_name" pattern="[A-Za-z0-9_]+" autocomplete="off">
+              </label>
+              <button class="button" type="submit">Create</button>
+            </form>
+          </div>
+        </details>
+      </div>
+      <div class="site-bar-right">
+        <form class="search-bar search-bar-global" method="get" action="/">
+          {% if sort_query %}
+          <input type="hidden" name="sort" value="{{ sort_query }}">
+          {% endif %}
+          {% if unnamed_only %}
+          <input type="hidden" name="unnamed" value="1">
+          {% endif %}
+          <label class="search-field">
+            <input type="search" name="q" value="{{ search_query }}" placeholder="Search" autocomplete="off">
+          </label>
+        </form>
+      </div>
     </header>
     <main class="shell">
       {% block content %}{% endblock %}

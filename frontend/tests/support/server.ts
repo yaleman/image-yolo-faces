@@ -70,7 +70,15 @@ export async function startE2EServer(): Promise<E2EServer> {
 
   const child = spawn(
     "uv",
-    ["run", "python", script, "--workspace", workspace, "--port", String(port)],
+    [
+      "run",
+      "python",
+      script,
+      "--workspaces-root",
+      workspace,
+      "--port",
+      String(port),
+    ],
     {
       cwd: process.cwd(),
       env: {

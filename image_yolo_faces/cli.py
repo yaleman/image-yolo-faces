@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Iterator, Sequence, Tuple
@@ -14,13 +15,23 @@ from .ingest import (
     DEFAULT_PERSON_GROUPING_STRATEGY,
     DEFAULT_PERSON_THRESHOLD,
     IMAGE_EXTENSIONS,
-    annotated_output_path,
+    hashes_for_file,
     load_face_encoder,
     load_model,
     normalize_image_entry,
-    normalize_image_key,
     render_faces,
     scan_image_entry,
+)
+from .workspaces import (
+    DEFAULT_WORKSPACE_NAME,
+    ensure_workspace_layout,
+    normalize_report_media_paths,
+    resolve_workspaces_root,
+    validate_workspace_name,
+    uniquify_filename,
+    workspace_annotated_dir,
+    workspace_photos_dir,
+    workspace_report_path,
 )
 
 
@@ -62,7 +73,9 @@ def default_report(
 
 
 def load_existing_report(
-    output_path: Path,
+    report_path: Path,
+    workspaces_root: Path,
+    workspace_name: str,
     model_repo: str,
     model_file: str,
     confidence: float,
@@ -70,7 +83,7 @@ def load_existing_report(
     embedding_model: str,
     person_threshold: float,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    if not output_path.exists():
+    if not report_path.exists():
         return (
             default_report(
                 model_repo,
@@ -85,15 +98,15 @@ def load_existing_report(
         )
 
     try:
-        raw_report = json.loads(output_path.read_text(encoding="utf-8"))
+        raw_report = json.loads(report_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise click.ClickException(
-            f"Existing report at {output_path} is not valid JSON: {exc}"
+            f"Existing report at {report_path} is not valid JSON: {exc}"
         ) from exc
 
     if not isinstance(raw_report, dict):
         raise click.ClickException(
-            f"Existing report at {output_path} must contain a JSON object."
+            f"Existing report at {report_path} must contain a JSON object."
         )
 
     if (
@@ -138,36 +151,26 @@ def load_existing_report(
     images = raw_report.get("images", [])
     if not isinstance(images, list):
         raise click.ClickException(
-            f"Existing report at {output_path} has an invalid 'images' field."
+            f"Existing report at {report_path} has an invalid 'images' field."
         )
 
-    report = {
-        "model_repo": model_repo,
-        "model_file": model_file,
-        "confidence_threshold": confidence,
-        "next_person_id": 1,
-        "images": images,
-    }
+    report = raw_report
+    report["model_repo"] = model_repo
+    report["model_file"] = model_file
+    report["confidence_threshold"] = confidence
+    report["images"] = images
     if group_by_person:
         report["group_by_person"] = True
         report["embedding_model"] = embedding_model
         report["person_similarity_threshold"] = person_threshold
         report["person_grouping_strategy"] = DEFAULT_PERSON_GROUPING_STRATEGY
 
-    image_index: dict[str, dict[str, Any]] = {}
-    for entry in images:
-        if not isinstance(entry, dict) or "image" not in entry:
-            continue
-        normalize_image_entry(entry)
-        entry["image"] = normalize_image_key(entry["image"])
-        image_index[normalize_image_key(entry["image"])] = entry
-
     people: list[dict[str, Any]] = []
     if group_by_person:
         loaded_people = raw_report.get("people", [])
         if not isinstance(loaded_people, list):
             raise click.ClickException(
-                f"Existing report at {output_path} has an invalid 'people' field."
+                f"Existing report at {report_path} has an invalid 'people' field."
             )
         people = loaded_people
         max_person_id = 0
@@ -181,8 +184,26 @@ def load_existing_report(
             report["next_person_id"] = next_person_id
         else:
             report["next_person_id"] = max_person_id + 1
+    elif isinstance(raw_report.get("next_person_id"), int):
+        report["next_person_id"] = int(raw_report["next_person_id"])
+    else:
+        report["next_person_id"] = 1
 
-    return report, image_index, people
+    normalize_report_media_paths(report, workspaces_root, workspace_name)
+
+    image_hash_index: dict[str, dict[str, Any]] = {}
+    for entry in images:
+        if not isinstance(entry, dict):
+            continue
+        normalize_image_entry(entry)
+        hashes = entry.get("hashes", {})
+        if not isinstance(hashes, dict):
+            continue
+        digest = hashes.get("sha256")
+        if isinstance(digest, str) and digest.strip():
+            image_hash_index[digest] = entry
+
+    return report, image_hash_index, people
 
 
 def build_report(
@@ -191,11 +212,12 @@ def build_report(
     image_roots: Sequence[Path],
     recursive: bool,
     confidence: float,
-    annotated_dir: Path | None,
     group_by_person: bool,
     person_threshold: float,
+    workspaces_root: Path,
+    workspace_name: str,
     report: dict[str, Any],
-    image_index: dict[str, dict[str, Any]],
+    image_hash_index: dict[str, dict[str, Any]],
     people: list[dict[str, Any]],
 ) -> dict:
     if group_by_person:
@@ -204,24 +226,40 @@ def build_report(
     else:
         next_person_id = 1
 
-    for root, image_path in iter_images(image_roots, recursive):
-        image_key = normalize_image_key(image_path)
-        cached_entry = image_index.get(image_key)
+    photos_dir = workspace_photos_dir(workspaces_root, workspace_name)
+    annotated_dir = workspace_annotated_dir(workspaces_root, workspace_name)
+    photos_dir.mkdir(parents=True, exist_ok=True)
+    annotated_dir.mkdir(parents=True, exist_ok=True)
+
+    for _, image_path in iter_images(image_roots, recursive):
+        digest = hashes_for_file(image_path)["sha256"]
+        cached_entry = image_hash_index.get(digest)
         if cached_entry is not None:
-            if annotated_dir is not None:
-                cached_faces = cached_entry.get("faces", [])
-                annotated_path = annotated_output_path(root, image_path, annotated_dir)
-                render_faces(image_path, cached_faces, annotated_path)
-                cached_entry["annotated_image"] = str(annotated_path)
+            cached_image = cached_entry.get("image")
+            if isinstance(cached_image, str):
+                resolved_cached_image = photos_dir / cached_image
+                annotated_path = annotated_dir / cached_image
+                if (
+                    not annotated_path.exists()
+                    and resolved_cached_image.exists()
+                ):
+                    cached_faces = cached_entry.get("faces", [])
+                    render_faces(
+                        resolved_cached_image,
+                        cached_faces if isinstance(cached_faces, list) else [],
+                        annotated_path,
+                    )
             continue
 
-        annotated_path = None
-        if annotated_dir is not None:
-            annotated_path = annotated_output_path(root, image_path, annotated_dir)
+        imported_image_path = uniquify_filename(
+            photos_dir, image_path.stem, image_path.suffix
+        )
+        shutil.copy2(image_path, imported_image_path)
+        annotated_path = annotated_dir / imported_image_path.name
         entry, next_person_id = scan_image_entry(
             model=model,
             face_encoder=face_encoder,
-            image_path=image_path,
+            image_path=imported_image_path,
             confidence=confidence,
             added_at_ns=time.time_ns(),
             annotated_path=annotated_path,
@@ -229,9 +267,11 @@ def build_report(
             person_threshold=person_threshold,
             people=people,
             next_person_id=next_person_id,
+            storage_root=photos_dir,
         )
+        entry["hashes"]["sha256"] = digest
         report["images"].append(entry)
-        image_index[image_key] = entry
+        image_hash_index[digest] = entry
 
     if group_by_person:
         report["next_person_id"] = next_person_id
@@ -246,15 +286,19 @@ def build_report(
     type=click.Path(path_type=Path, exists=True, readable=True),
 )
 @click.option(
-    "--output",
-    "output_path",
-    type=click.Path(path_type=Path),
-    help="Write the JSON report to a file instead of stdout.",
+    "--workspaces-dir",
+    "workspaces_dir",
+    type=click.Path(path_type=Path, file_okay=False, exists=False),
+    default=None,
+    show_default=True,
+    help="Path to the directory that contains workspace folders.",
 )
 @click.option(
-    "--annotated-dir",
-    type=click.Path(path_type=Path),
-    help="Write annotated images to this directory.",
+    "--workspace",
+    "workspace_name",
+    default=DEFAULT_WORKSPACE_NAME,
+    show_default=True,
+    help="Workspace name to import images into.",
 )
 @click.option(
     "--recursive/--no-recursive",
@@ -302,8 +346,8 @@ def build_report(
 )
 def cli(
     inputs: Tuple[Path, ...],
-    output_path: Path | None,
-    annotated_dir: Path | None,
+    workspaces_dir: Path | None,
+    workspace_name: str,
     recursive: bool,
     confidence: float,
     model_repo: str,
@@ -315,12 +359,19 @@ def cli(
     if not inputs:
         raise click.ClickException("Provide at least one image or directory.")
 
+    resolved_workspaces_root = resolve_workspaces_root(workspaces_dir)
+    cleaned_workspace_name = validate_workspace_name(workspace_name)
+    ensure_workspace_layout(resolved_workspaces_root, cleaned_workspace_name)
+    report_path = workspace_report_path(resolved_workspaces_root, cleaned_workspace_name)
+
     model = load_model(model_repo, model_file)
     face_encoder = load_face_encoder(embedding_model) if group_by_person else None
 
     report, image_index, people = (
         load_existing_report(
-            output_path,
+            report_path,
+            resolved_workspaces_root,
+            cleaned_workspace_name,
             model_repo,
             model_file,
             confidence,
@@ -328,7 +379,7 @@ def cli(
             embedding_model,
             person_threshold,
         )
-        if output_path is not None
+        if report_path.exists()
         else (
             default_report(
                 model_repo,
@@ -349,23 +400,21 @@ def cli(
         image_roots=inputs,
         recursive=recursive,
         confidence=confidence,
-        annotated_dir=annotated_dir,
         group_by_person=group_by_person,
         person_threshold=person_threshold,
+        workspaces_root=resolved_workspaces_root,
+        workspace_name=cleaned_workspace_name,
         report=report,
-        image_index=image_index,
+        image_hash_index=image_index,
         people=people,
     )
 
     if not report["images"]:
         raise click.ClickException("No image files were found in the provided inputs.")
 
-    if output_path is not None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        click.echo(f"Wrote JSON report to {output_path}", err=True)
-    else:
-        click.echo(json.dumps(report, indent=2))
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    click.echo(f"Wrote JSON report to {report_path}", err=True)
 
     image_count = len(report["images"])
     face_count = sum(image["face_count"] for image in report["images"])
@@ -374,5 +423,7 @@ def cli(
         err=True,
     )
 
-    if annotated_dir is not None:
-        click.echo(f"Annotated images were written under {annotated_dir}", err=True)
+    click.echo(
+        f"Imported images into {workspace_photos_dir(resolved_workspaces_root, cleaned_workspace_name)}",
+        err=True,
+    )

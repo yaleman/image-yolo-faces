@@ -34,6 +34,15 @@
       {% endif %}
     </div>
     <form method="post" action="/people/{{ person_id }}" class="stack">
+      {% if search_query %}
+      <input type="hidden" name="q" value="{{ search_query }}">
+      {% endif %}
+      {% if sort_query %}
+      <input type="hidden" name="sort" value="{{ sort_query }}">
+      {% endif %}
+      {% if unnamed_only %}
+      <input type="hidden" name="unnamed" value="1">
+      {% endif %}
       <label>
         Name
         <input type="text" name="name" value="{{ name_input }}" placeholder="Enter a name">
@@ -53,11 +62,104 @@
   </div>
 </section>
 
+<section class="panel page-section person-transfer">
+  <div class="section-header">
+    <h2 class="section-title">Workspace transfer</h2>
+    <p class="section-subtitle">Copy this person into another workspace or move the linked image data out of this workspace.</p>
+  </div>
+
+  {% if transfer_preview and transfer_preview.mixed_image_count %}
+  <div class="transfer-warning">
+    <strong>{{ transfer_preview.mixed_image_count }} linked image(s) also contain other people.</strong>
+    <p>Choose whether to move the linked images/faces or copy the data only.</p>
+    <ul class="transfer-warning-list">
+      {% for image in transfer_preview.images %}
+      {% if image.mixed %}
+      <li>{{ image.image_name }} · {{ image.other_people_count }} other person(s)</li>
+      {% endif %}
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if transfer_target_options %}
+  {% if transfer_preview and transfer_preview.mixed_image_count %}
+  <div class="page-actions transfer-warning-actions">
+    <form method="post" action="/people/{{ person_id }}/transfer" class="transfer-action-form">
+      {% if search_query %}
+      <input type="hidden" name="q" value="{{ search_query }}">
+      {% endif %}
+      {% if sort_query %}
+      <input type="hidden" name="sort" value="{{ sort_query }}">
+      {% endif %}
+      {% if unnamed_only %}
+      <input type="hidden" name="unnamed" value="1">
+      {% endif %}
+      <input type="hidden" name="target_workspace" value="{{ transfer_target_workspace }}">
+      <input type="hidden" name="transfer_mode" value="move">
+      <input type="hidden" name="transfer_choice" value="move_linked">
+      <button class="button" type="submit">Move linked images/faces</button>
+    </form>
+    <form method="post" action="/people/{{ person_id }}/transfer" class="transfer-action-form">
+      {% if search_query %}
+      <input type="hidden" name="q" value="{{ search_query }}">
+      {% endif %}
+      {% if sort_query %}
+      <input type="hidden" name="sort" value="{{ sort_query }}">
+      {% endif %}
+      {% if unnamed_only %}
+      <input type="hidden" name="unnamed" value="1">
+      {% endif %}
+      <input type="hidden" name="target_workspace" value="{{ transfer_target_workspace }}">
+      <input type="hidden" name="transfer_mode" value="move">
+      <input type="hidden" name="transfer_choice" value="copy_only">
+      <button class="button" type="submit">Copy data only</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <form method="post" action="/people/{{ person_id }}/transfer" class="stack">
+    {% if search_query %}
+    <input type="hidden" name="q" value="{{ search_query }}">
+    {% endif %}
+    {% if sort_query %}
+    <input type="hidden" name="sort" value="{{ sort_query }}">
+    {% endif %}
+    {% if unnamed_only %}
+    <input type="hidden" name="unnamed" value="1">
+    {% endif %}
+    <label>
+      Target workspace
+      <select name="target_workspace">
+        {% for workspace in transfer_target_options %}
+        <option value="{{ workspace }}"{% if workspace == transfer_target_workspace %} selected{% endif %}>{{ workspace }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="page-actions">
+      <button class="button" type="submit" name="transfer_mode" value="copy">Copy to workspace</button>
+      <button class="button" type="submit" name="transfer_mode" value="move">Move to workspace</button>
+    </div>
+  </form>
+  {% else %}
+  <div class="empty-state">Create another workspace to copy or move this person.</div>
+  {% endif %}
+</section>
+
 <section class="panel page-section">
   <div class="section-header">
     <p class="section-subtitle">Select one or more images to split them into a new person.</p>
   </div>
   <form method="post" action="/people/{{ person_id }}/split" class="stack">
+    {% if search_query %}
+    <input type="hidden" name="q" value="{{ search_query }}">
+    {% endif %}
+    {% if sort_query %}
+    <input type="hidden" name="sort" value="{{ sort_query }}">
+    {% endif %}
+    {% if unnamed_only %}
+    <input type="hidden" name="unnamed" value="1">
+    {% endif %}
 
     {% if images %}
     <div class="selection-grid">

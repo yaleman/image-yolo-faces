@@ -4,15 +4,14 @@ import html
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 from io import BytesIO
 from dataclasses import dataclass, field
-from hashlib import sha1
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import quote
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import click
 import uvicorn
@@ -38,35 +37,34 @@ from .ingest import (
     load_face_encoder,
     load_model,
     normalize_image_entry,
+    normalize_image_key,
     render_faces,
     scan_image_entry,
     sha256_bytes,
     weighted_centroid,
 )
+from .workspaces import (
+    DEFAULT_WORKSPACE_NAME,
+    WORKSPACES_DIR_ENV,
+    ensure_workspace_layout,
+    list_workspaces,
+    normalize_report_media_paths,
+    resolve_workspaces_root,
+    validate_workspace_name,
+    workspace_annotated_dir,
+    workspace_annotated_media_path,
+    workspace_photos_dir,
+    workspace_original_media_path,
+    workspace_report_path,
+)
 
-DEFAULT_REPORT_PATH = Path("faces.json")
-REPORT_PATH_ENV = "IMAGE_YOLO_FACES_REPORT_PATH"
+WORKSPACE_COOKIE_NAME = "faces_workspace"
 logger = logging.getLogger(__name__)
 logger.level = logging.INFO
 
 
-def image_key(image_path: str | Path) -> str:
-    return sha1(str(Path(image_path).resolve()).encode("utf-8")).hexdigest()
-
-
-def resolve_report_path(report_path: Path) -> Path:
-    return report_path.expanduser().resolve()
-
-
-def active_report_path(report_path: Path | None = None) -> Path:
-    if report_path is not None:
-        return resolve_report_path(report_path)
-
-    env_report_path = os.environ.get(REPORT_PATH_ENV)
-    if env_report_path:
-        return resolve_report_path(Path(env_report_path))
-
-    return resolve_report_path(DEFAULT_REPORT_PATH)
+def image_key(image_path: str | Path, base_dir: Path | None = None) -> str:
+    return normalize_image_key(image_path, base_dir)
 
 
 def resolve_media_path(report_path: Path, value: str | None) -> Path | None:
@@ -77,6 +75,18 @@ def resolve_media_path(report_path: Path, value: str | None) -> Path | None:
     if path.is_absolute():
         return path
     return (report_path.parent / path).resolve()
+
+
+def original_media_path(store: "ReportStore", value: str | Path) -> Path:
+    return workspace_original_media_path(
+        store.workspaces_root, store.workspace_name, value
+    )
+
+
+def annotated_media_path(store: "ReportStore", value: str | Path) -> Path:
+    return workspace_annotated_media_path(
+        store.workspaces_root, store.workspace_name, value
+    )
 
 
 def media_version(path: Path | None) -> str:
@@ -178,7 +188,7 @@ def person_added_sort_key(
         image_value = face.get("image")
         if not isinstance(image_value, str):
             continue
-        entry = image_lookup.get(image_key(image_value))
+        entry = image_lookup.get(image_key(image_value, store.workspace_dir))
         candidate = image_added_at(entry) if entry is not None else 0
         if earliest_added_at is None or candidate < earliest_added_at:
             earliest_added_at = candidate
@@ -220,7 +230,7 @@ def sort_image_groups(
 
     def sort_key(group: dict[str, Any]) -> tuple[int, str, str]:
         image_value = str(group["image"])
-        entry = image_lookup.get(image_key(image_value))
+        entry = image_lookup.get(image_key(image_value, store.workspace_dir))
         added_at = image_added_at(entry) if entry is not None else 0
         return (
             -added_at,
@@ -251,11 +261,23 @@ def build_sort_links(
     return links
 
 
-def report_relative_path(report_path: Path, path: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(report_path.parent))
-    except ValueError:
-        return str(path.resolve())
+def workspace_context(
+    workspaces_root: Path, current_workspace: str
+) -> dict[str, Any]:
+    return {
+        "current_workspace": current_workspace,
+        "workspaces": list_workspaces(workspaces_root),
+    }
+
+
+def set_workspace_cookie(response: Response, workspace_name: str) -> None:
+    response.set_cookie(
+        WORKSPACE_COOKIE_NAME,
+        workspace_name,
+        path="/",
+        httponly=True,
+        samesite="lax",
+    )
 
 
 def frontend_assets(static_dir: Path) -> dict[str, Any]:
@@ -448,13 +470,16 @@ def preview_image_bytes(image_path: Path, bbox: list[float]) -> bytes | None:
 
 
 def person_preview_bbox(
-    entry: dict[str, Any], person_id: int, person: dict[str, Any] | None
+    entry: dict[str, Any],
+    person_id: int,
+    person: dict[str, Any] | None,
+    base_dir: Path | None = None,
 ) -> list[float] | None:
     image_value = entry.get("image")
     if not isinstance(image_value, str):
         return None
 
-    image_id = image_key(image_value)
+    image_id = image_key(image_value, base_dir)
 
     if person is not None:
         person_faces: list[dict[str, Any]] = []
@@ -466,7 +491,7 @@ def person_preview_bbox(
                 face_image = face.get("image")
                 if not isinstance(face_image, str):
                     continue
-                if image_key(face_image) == image_id:
+                if image_key(face_image, base_dir) == image_id:
                     person_faces.append(face)
         bbox = representative_face_bbox(person_faces)
         if bbox is not None:
@@ -547,7 +572,11 @@ def load_report(report_path: Path) -> dict[str, Any]:
             f"Report at {report_path} must contain a JSON object."
         )
 
-    return normalize_report(raw_report)
+    report = normalize_report(raw_report)
+    normalize_report_media_paths(
+        report, report_path.parent.parent, report_path.parent.name
+    )
+    return report
 
 
 def person_display_name(
@@ -684,7 +713,22 @@ class ReportStore:
     def open(cls, report_path: Path) -> "ReportStore":
         return cls(report_path=report_path, report=load_report(report_path))
 
+    @property
+    def workspace_dir(self) -> Path:
+        return self.report_path.parent
+
+    @property
+    def workspaces_root(self) -> Path:
+        return self.report_path.parent.parent
+
+    @property
+    def workspace_name(self) -> str:
+        return self.workspace_dir.name
+
     def save(self) -> None:
+        normalize_report_media_paths(
+            self.report, self.workspaces_root, self.workspace_name
+        )
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.write_text(json.dumps(self.report, indent=2), encoding="utf-8")
 
@@ -702,8 +746,8 @@ class ReportStore:
             if not isinstance(image_value, str):
                 continue
 
-            image_path = Path(image_value)
-            if not image_path.exists():
+            image_path = original_media_path(self, image_value)
+            if image_path is None or not image_path.exists():
                 continue
 
             image["hashes"] = hashes_for_file(image_path)
@@ -724,45 +768,11 @@ class ReportStore:
                 return image
         return None
 
-    def _common_parent_dir(self, values: list[str]) -> Path | None:
-        if not values:
-            return None
-
-        resolved_paths = [str(Path(value).resolve().parent) for value in values]
-        try:
-            common = Path(os.path.commonpath(resolved_paths))
-        except ValueError:
-            return None
-
-        if common == self.report_path.parent or str(common) == common.anchor:
-            return None
-        return common
-
     def inferred_images_dir(self) -> Path:
-        image_values = [
-            str(image["image"])
-            for image in self.report["images"]
-            if isinstance(image, dict) and isinstance(image.get("image"), str)
-        ]
-        return self._common_parent_dir(image_values) or (
-            self.report_path.parent / "photos"
-        )
+        return workspace_photos_dir(self.workspaces_root, self.workspace_name)
 
     def inferred_annotated_dir(self) -> Path:
-        annotated_values: list[str] = []
-        for image in self.report["images"]:
-            if not isinstance(image, dict):
-                continue
-            annotated_value = image.get("annotated_image")
-            resolved = resolve_media_path(
-                self.report_path,
-                annotated_value if isinstance(annotated_value, str) else None,
-            )
-            if resolved is not None:
-                annotated_values.append(str(resolved))
-        return self._common_parent_dir(annotated_values) or (
-            self.report_path.parent / "annotated"
-        )
+        return workspace_annotated_dir(self.workspaces_root, self.workspace_name)
 
     def model_config(self) -> tuple[str, str, float]:
         model_repo = self.report.get("model_repo")
@@ -814,7 +824,7 @@ class ReportStore:
             image_value = image.get("image")
             if not isinstance(image_value, str):
                 continue
-            index[image_key(image_value)] = image
+            index[image_key(image_value, self.workspace_dir)] = image
         return index
 
     def person_index(self) -> dict[int, dict[str, Any]]:
@@ -873,7 +883,7 @@ class ReportStore:
                 image_value,
                 {
                     "image": image_value,
-                    "image_id": image_key(image_value),
+                    "image_id": image_key(image_value, self.workspace_dir),
                     "faces": [],
                     "face_count": 0,
                 },
@@ -891,21 +901,17 @@ class ReportStore:
         person_labels = self.display_name_map()
 
         for image_value in image_paths:
-            image_id = image_key(image_value)
+            image_id = image_key(image_value, self.workspace_dir)
             entry = image_lookup.get(image_id)
             if entry is None:
                 continue
 
-            annotated_value = entry.get("annotated_image")
-            annotated_path = resolve_media_path(
-                self.report_path,
-                annotated_value if isinstance(annotated_value, str) else None,
-            )
+            annotated_path = annotated_media_path(self, image_value)
             if annotated_path is None:
                 continue
 
-            original_path = Path(image_value)
-            if not original_path.exists():
+            original_path = original_media_path(self, image_value)
+            if original_path is None or not original_path.exists():
                 continue
 
             faces = entry.get("faces", [])
@@ -922,18 +928,17 @@ class ReportStore:
 
     def ensure_annotated_image(self, entry: dict[str, Any]) -> Path | None:
         image_value = entry.get("image")
-        annotated_value = entry.get("annotated_image")
-        if not isinstance(image_value, str) or not isinstance(annotated_value, str):
+        if not isinstance(image_value, str):
             return None
 
-        annotated_path = resolve_media_path(self.report_path, annotated_value)
+        annotated_path = annotated_media_path(self, image_value)
         if annotated_path is None:
             return None
         if annotated_path.exists():
             return annotated_path
 
-        original_path = Path(image_value)
-        if not original_path.exists():
+        original_path = original_media_path(self, image_value)
+        if original_path is None or not original_path.exists():
             return None
 
         faces = entry.get("faces", [])
@@ -964,7 +969,7 @@ class ReportStore:
                 raise HTTPException(
                     status_code=500, detail="Existing image is invalid."
                 )
-            existing_id = image_key(existing_image)
+            existing_id = image_key(existing_image, self.workspace_dir)
             logger.warning(
                 "upload skipped filename=%r status=duplicate image_id=%s sha256=%s existing_image=%s",
                 filename,
@@ -985,9 +990,8 @@ class ReportStore:
         renamed = image_path.name != original_image_path.name
         image_path.write_bytes(content)
 
-        annotated_dir = self.inferred_annotated_dir()
-        annotated_dir.mkdir(parents=True, exist_ok=True)
-        annotated_path = annotated_dir / f"{image_path.stem}_faces{image_path.suffix}"
+        annotated_path = annotated_media_path(self, image_path.name)
+        annotated_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             _, _, confidence = self.model_config()
@@ -1009,18 +1013,16 @@ class ReportStore:
                 person_threshold=person_threshold,
                 people=people,
                 next_person_id=current_next_id,
+                storage_root=self.workspace_dir,
             )
             entry["hashes"]["sha256"] = digest
-            entry["annotated_image"] = report_relative_path(
-                self.report_path, annotated_path
-            )
             self.report["images"].append(entry)
             if group_by_person:
                 self.report["people"] = people
                 self.report["next_person_id"] = next_person_id
 
             self.save()
-            image_id = image_key(entry["image"])
+            image_id = image_key(entry["image"], self.workspace_dir)
             face_count = int(entry.get("face_count", 0))
             person_ids: set[int] = set()
             for face in entry.get("faces", []):
@@ -1032,7 +1034,7 @@ class ReportStore:
                     continue
 
             logger.warning(
-                "upload imported filename=%r status=imported image_id=%s sha256=%s stored_image=%s renamed=%s faces=%d people=%d annotated_image=%s",
+                "upload imported filename=%r status=imported image_id=%s sha256=%s stored_image=%s renamed=%s faces=%d people=%d annotated_path=%s",
                 filename,
                 image_id,
                 digest,
@@ -1070,12 +1072,8 @@ class ReportStore:
         if not isinstance(image_value, str):
             raise HTTPException(status_code=404, detail="Image path missing.")
 
-        original_path = Path(image_value)
-        annotated_value = entry.get("annotated_image")
-        annotated_path = resolve_media_path(
-            self.report_path,
-            annotated_value if isinstance(annotated_value, str) else None,
-        )
+        original_path = original_media_path(self, image_value)
+        annotated_path = annotated_media_path(self, image_value)
 
         for path in [annotated_path, original_path]:
             if path is None or not path.exists():
@@ -1311,14 +1309,276 @@ class ReportStore:
             if not isinstance(faces, list):
                 continue
             for face in faces:
-                if (
-                    isinstance(face, dict)
-                    and face.get("person_id") == person_id
-                    and str(face.get("image")) in selected_images
-                ):
+                if isinstance(face, dict) and face.get("person_id") == person_id:
                     face["person_id"] = new_person_id
 
         return new_person_id
+
+    def person_transfer_preview(self, person_id: int) -> dict[str, Any]:
+        people = self.person_index()
+        source = people.get(person_id)
+        if source is None:
+            raise HTTPException(
+                status_code=404, detail=f"Person {person_id} was not found."
+            )
+
+        source_faces = [
+            face for face in source.get("faces", []) if isinstance(face, dict)
+        ]
+        image_lookup = self.image_index()
+        image_groups: dict[str, dict[str, Any]] = {}
+
+        for face in source_faces:
+            image_value = face.get("image")
+            if not isinstance(image_value, str):
+                continue
+            group = image_groups.setdefault(
+                image_value,
+                {
+                    "image": image_value,
+                    "image_id": image_key(image_value, self.workspace_dir),
+                    "image_name": Path(image_value).name,
+                    "face_count": 0,
+                    "mixed": False,
+                    "other_people_count": 0,
+                },
+            )
+            group["face_count"] += 1
+
+        for group in image_groups.values():
+            entry = image_lookup.get(group["image_id"])
+            if entry is None:
+                continue
+
+            other_person_ids: set[int] = set()
+            faces = entry.get("faces", [])
+            if isinstance(faces, list):
+                for face in faces:
+                    if not isinstance(face, dict):
+                        continue
+                    try:
+                        current_person_id = int(face["person_id"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if current_person_id != person_id:
+                        other_person_ids.add(current_person_id)
+            group["mixed"] = bool(other_person_ids)
+            group["other_people_count"] = len(other_person_ids)
+
+        grouped_images = sorted(
+            image_groups.values(),
+            key=lambda item: (
+                item["image_name"].casefold(),
+                str(item["image"]).casefold(),
+            ),
+        )
+
+        return {
+            "person_id": person_id,
+            "name": person_display_name(source, person_id),
+            "face_count": len(source_faces),
+            "image_count": len(grouped_images),
+            "mixed_image_count": sum(1 for group in grouped_images if group["mixed"]),
+            "images": grouped_images,
+        }
+
+    def transfer_person_to_workspace(
+        self,
+        person_id: int,
+        target_store: "ReportStore",
+        move_linked_images: bool,
+    ) -> tuple[int, set[str], set[str]]:
+        if self.workspace_dir == target_store.workspace_dir:
+            raise HTTPException(
+                status_code=400, detail="Select a different workspace to transfer to."
+            )
+
+        source_people = self.person_index()
+        source = source_people.get(person_id)
+        if source is None:
+            raise HTTPException(
+                status_code=404, detail=f"Person {person_id} was not found."
+            )
+
+        source_faces = [
+            face for face in source.get("faces", []) if isinstance(face, dict)
+        ]
+        source_image_paths = sorted(
+            {
+                str(face["image"])
+                for face in source_faces
+                if isinstance(face.get("image"), str)
+            }
+        )
+        if not source_image_paths:
+            raise HTTPException(
+                status_code=400, detail="No linked images were found to transfer."
+            )
+
+        target_people = target_store.report.setdefault("people", [])
+        if not isinstance(target_people, list):
+            target_people = []
+            target_store.report["people"] = target_people
+
+        target_next_id = target_store.report.get("next_person_id")
+        if not isinstance(target_next_id, int) or target_next_id < 1:
+            target_next_id = max(target_store.person_index().keys(), default=0) + 1
+
+        new_person_id = target_next_id
+        source_centroid = source.get("centroid")
+        source_aliases = source.get("aliases")
+        new_person: dict[str, Any] = {
+            "person_id": new_person_id,
+            "face_count": 0,
+            "faces": [],
+            "centroid": list(source_centroid) if isinstance(source_centroid, list) else [],
+            "aliases": [
+                str(alias)
+                for alias in source_aliases
+                if isinstance(alias, str) and alias.strip()
+            ]
+            if isinstance(source_aliases, list)
+            else [],
+        }
+        source_name = source.get("name")
+        if isinstance(source_name, str) and source_name.strip():
+            new_person["name"] = source_name.strip()
+
+        source_lookup = self.image_index()
+        source_affected_images: set[str] = set()
+        target_affected_images: set[str] = set()
+
+        for image_value in source_image_paths:
+            source_image_id = image_key(image_value, self.workspace_dir)
+            source_entry = source_lookup.get(source_image_id)
+            if source_entry is None:
+                continue
+
+            source_image_path = original_media_path(self, image_value)
+            if source_image_path is None or not source_image_path.exists():
+                continue
+
+            source_faces_for_image = [
+                face
+                for face in source_entry.get("faces", [])
+                if isinstance(face, dict)
+                and face.get("person_id") == person_id
+            ]
+            if not source_faces_for_image:
+                continue
+
+            hashes = source_entry.get("hashes", {})
+            digest = (
+                hashes.get("sha256")
+                if isinstance(hashes, dict) and isinstance(hashes.get("sha256"), str)
+                else None
+            )
+            target_entry = (
+                target_store.find_image_by_hash("sha256", digest)
+                if isinstance(digest, str)
+                else None
+            )
+            target_image_value: str
+            if target_entry is None:
+                target_photos_dir = workspace_photos_dir(
+                    target_store.workspaces_root, target_store.workspace_name
+                )
+                target_photos_dir.mkdir(parents=True, exist_ok=True)
+                copied_path = uniquify_filename(
+                    target_photos_dir,
+                    source_image_path.stem,
+                    source_image_path.suffix,
+                )
+                shutil.copy2(source_image_path, copied_path)
+                target_image_value = copied_path.name
+
+                target_entry = {
+                    "image": target_image_value,
+                    "face_count": 0,
+                    "faces": [],
+                    "added_at": time.time_ns(),
+                    "hashes": {"sha256": digest} if isinstance(digest, str) else {},
+                }
+                target_store.report.setdefault("images", []).append(target_entry)
+            else:
+                target_image_value = str(target_entry.get("image"))
+                if not isinstance(target_image_value, str):
+                    continue
+
+            target_faces = target_entry.get("faces", [])
+            if not isinstance(target_faces, list):
+                target_faces = []
+            copied_faces: list[dict[str, Any]] = []
+            for face in source_faces_for_image:
+                face_copy = dict(face)
+                face_copy["person_id"] = new_person_id
+                face_copy["image"] = target_image_value
+                copied_faces.append(face_copy)
+            target_faces.extend(copied_faces)
+            target_entry["faces"] = target_faces
+            target_entry["face_count"] = len(target_faces)
+
+            new_person["faces"].extend(copied_faces)
+            new_person["face_count"] += len(copied_faces)
+            target_affected_images.add(target_image_value)
+
+            if move_linked_images:
+                remaining_faces = [
+                    face
+                    for face in source_entry.get("faces", [])
+                    if not (isinstance(face, dict) and face.get("person_id") == person_id)
+                ]
+                if remaining_faces:
+                    source_entry["faces"] = remaining_faces
+                    source_entry["face_count"] = len(remaining_faces)
+                    source_affected_images.add(image_value)
+                else:
+                    annotated_path = annotated_media_path(self, image_value)
+                    if annotated_path is not None and annotated_path.exists():
+                        try:
+                            annotated_path.unlink()
+                        except OSError:
+                            pass
+                    if source_image_path.exists():
+                        try:
+                            source_image_path.unlink()
+                        except OSError:
+                            pass
+                    self.report["images"] = [
+                        image for image in self.report["images"] if image is not source_entry
+                    ]
+                    source_affected_images.add(image_value)
+
+        if not new_person["faces"]:
+            raise HTTPException(
+                status_code=400,
+                detail="No transfer data was found for the selected person.",
+            )
+
+        target_people.append(new_person)
+        target_store.report["next_person_id"] = new_person_id + 1
+
+        if move_linked_images:
+            source["faces"] = [
+                face
+                for face in source.get("faces", [])
+                if not (isinstance(face, dict) and face.get("person_id") == person_id)
+            ]
+            source["face_count"] = len(source["faces"])
+            if source["faces"]:
+                source_affected_images.update(
+                    {
+                        str(face["image"])
+                        for face in source["faces"]
+                        if isinstance(face.get("image"), str)
+                    }
+                )
+            else:
+                self.report["people"] = [
+                    person for person in self.report["people"] if person is not source
+                ]
+
+        return new_person_id, source_affected_images, target_affected_images
 
 
 def build_image_context(
@@ -1330,8 +1590,7 @@ def build_image_context(
     unnamed_only: bool = False,
 ) -> dict[str, Any]:
     image_value = entry.get("image", "")
-    image_id = image_key(image_value)
-    annotated_value = entry.get("annotated_image")
+    image_id = image_key(image_value, store.workspace_dir)
     image_name = Path(str(image_value)).name
 
     person_ids: list[int] = []
@@ -1354,9 +1613,7 @@ def build_image_context(
             person_display_name(person_lookup.get(person_id), person_id)
         )
 
-    annotated_path = resolve_media_path(
-        store.report_path, annotated_value if isinstance(annotated_value, str) else None
-    )
+    annotated_path = annotated_media_path(store, image_value)
 
     return {
         "index": index,
@@ -1368,12 +1625,9 @@ def build_image_context(
         "detail_url": with_query(
             f"/images/{image_id}", query, sort_query, unnamed_only
         ),
-        "annotated_url": media_url(annotated_path, f"/media/annotated/{image_id}")
-        if annotated_path is not None
-        else placeholder_media(image_name),
-        "annotated_exists": annotated_path is not None,
+        "annotated_url": media_url(annotated_path, f"/media/annotated/{image_id}"),
+        "annotated_exists": annotated_path.exists(),
         "annotated_media_url": f"/media/annotated/{image_id}",
-        "annotated_note": annotated_value,
     }
 
 
@@ -1436,7 +1690,7 @@ def build_index_context(
                 filtered_face_count += face_value
 
         return {
-            "title": f"Annotated images - {store.report_path.name}",
+            "title": f"Annotated images - {store.workspace_name}",
             "subtitle": "Review faces, name people, and merge mismatched clusters into the correct person.",
             "people": people,
             "images": images,
@@ -1478,10 +1732,9 @@ def build_person_list_context(
     preview_src = placeholder_media(person_display_name(person, person_id))
     if image_groups:
         first_group = image_groups[0]
-        preview_path = resolve_media_path(store.report_path, first_group["image"])
+        preview_path = original_media_path(store, first_group["image"])
         preview_src = media_url_for_paths(
             f"/media/person-preview/{first_group['image_id']}/{person_id}",
-            store.report_path,
             preview_path,
         )
 
@@ -1551,7 +1804,7 @@ def build_people_context(
         people = filtered_people
 
         return {
-            "title": f"People - {store.report_path.name}",
+            "title": f"People - {store.workspace_name}",
             "subtitle": "Open a person to inspect the images associated with them, then rename, merge, or split selections into a new person.",
             "people": people,
             "people_count": len(people),
@@ -1637,7 +1890,7 @@ def build_person_context(
 
         image_groups_context: list[dict[str, Any]] = []
         for group in image_groups:
-            preview_path = resolve_media_path(store.report_path, group["image"])
+            preview_path = original_media_path(store, group["image"])
             image_groups_context.append(
                 {
                     "image": group["image"],
@@ -1646,7 +1899,6 @@ def build_person_context(
                     "face_count": group["face_count"],
                     "preview_src": media_url_for_paths(
                         f"/media/person-preview/{group['image_id']}/{person_id}",
-                        store.report_path,
                         preview_path,
                     ),
                     "detail_url": with_query(
@@ -1660,7 +1912,7 @@ def build_person_context(
             )
 
         return {
-            "title": f"{name} - people",
+            "title": f"{name} - {store.workspace_name}",
             "heading": name,
             "subtitle": f"Person #{person_id}",
             "person_id": person_id,
@@ -1711,13 +1963,10 @@ def build_image_detail_context(
                     continue
                 person_groups.setdefault(person_id, []).append((face_index, face_entry))
 
-        original_path = Path(image_value)
-        annotated_path = resolve_media_path(
-            store.report_path,
-            entry.get("annotated_image")
-            if isinstance(entry.get("annotated_image"), str)
-            else None,
-        )
+        original_path = original_media_path(store, image_value)
+        if original_path is None:
+            raise HTTPException(status_code=404, detail="Image path missing.")
+        annotated_path = annotated_media_path(store, image_value)
         image_name = Path(image_value).name
         original_exists = original_path.exists()
 
@@ -1790,7 +2039,7 @@ def build_image_detail_context(
             )
 
         return {
-            "title": f"{image_name} - image review",
+            "title": f"{image_name} - {store.workspace_name}",
             "heading": image_name,
             "subtitle": image_value,
             "face_count": entry.get("face_count", 0),
@@ -1802,10 +2051,11 @@ def build_image_detail_context(
             if original_exists
             else placeholder_media(image_name),
             "original_available": original_exists,
-            "annotated_src": media_url(annotated_path, f"/media/annotated/{image_id}")
-            if annotated_path is not None
-            else placeholder_media(image_name),
-            "annotated_available": annotated_path is not None,
+            "annotated_src": media_url(
+                annotated_path,
+                f"/media/annotated/{image_id}",
+            ),
+            "annotated_available": annotated_path is not None and annotated_path.exists(),
             "person_groups": person_groups_context,
             "image_id": image_id,
             "search_query": query,
@@ -1816,11 +2066,41 @@ def build_image_detail_context(
         }
 
 
-def create_app(report_path: Path | None = None) -> FastAPI:
-    resolved_report_path = active_report_path(report_path)
-    store = ReportStore.open(resolved_report_path)
-    with store.lock:
-        store.ensure_hashes_backfilled()
+@dataclass
+class WorkspaceManager:
+    workspaces_root: Path
+    stores: dict[str, ReportStore] = field(default_factory=dict, init=False, repr=False)
+    lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+
+    def workspace_names(self) -> list[str]:
+        return list_workspaces(self.workspaces_root)
+
+    def ensure_workspace(self, workspace_name: str) -> ReportStore:
+        cleaned_name = validate_workspace_name(workspace_name)
+        ensure_workspace_layout(self.workspaces_root, cleaned_name)
+        report_path = workspace_report_path(self.workspaces_root, cleaned_name)
+
+        with self.lock:
+            store = self.stores.get(cleaned_name)
+            if store is None or store.report_path != report_path:
+                store = ReportStore.open(report_path)
+                with store.lock:
+                    store.ensure_hashes_backfilled()
+                self.stores[cleaned_name] = store
+            return store
+
+    def get_store(self, workspace_name: str) -> ReportStore:
+        with self.lock:
+            store = self.stores.get(workspace_name)
+            if store is not None:
+                return store
+        return self.ensure_workspace(workspace_name)
+
+
+def create_app(workspaces_root: Path | None = None) -> FastAPI:
+    resolved_workspaces_root = resolve_workspaces_root(workspaces_root)
+    manager = WorkspaceManager(resolved_workspaces_root)
+    manager.ensure_workspace(DEFAULT_WORKSPACE_NAME)
 
     app = FastAPI(title="image-yolo-faces")
     templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
@@ -1828,10 +2108,39 @@ def create_app(report_path: Path | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     frontend_assets_globals: Any = templates.env.globals
     frontend_assets_globals["frontend_assets"] = FrontendAssetsProxy(static_dir)  # type: ignore[invalid-assignment]
-    app.state.store = store
+    app.state.workspace_manager = manager
+
+    @app.middleware("http")
+    async def workspace_context_middleware(request: Request, call_next):
+        requested_workspace = request.cookies.get(WORKSPACE_COOKIE_NAME)
+        workspace_name = DEFAULT_WORKSPACE_NAME
+        set_cookie = False
+
+        if isinstance(requested_workspace, str) and requested_workspace.strip():
+            try:
+                cleaned_workspace = validate_workspace_name(requested_workspace)
+            except ValueError:
+                set_cookie = True
+            else:
+                if cleaned_workspace in manager.workspace_names():
+                    workspace_name = cleaned_workspace
+                else:
+                    set_cookie = True
+        else:
+            set_cookie = True
+
+        store = manager.ensure_workspace(workspace_name)
+        request.state.workspace_name = workspace_name
+        request.state.workspace_store = store
+        request.state.workspace_names = manager.workspace_names()
+
+        response = await call_next(request)
+        if set_cookie:
+            set_workspace_cookie(response, workspace_name)
+        return response
 
     def update_person_profile(
-        person_id: int, name: str, merge_into: str
+        store: ReportStore, person_id: int, name: str, merge_into: str
     ) -> tuple[int, set[str]]:
         target_id = person_id
         affected_images: set[str] = set()
@@ -1855,18 +2164,41 @@ def create_app(report_path: Path | None = None) -> FastAPI:
 
         return target_id, affected_images
 
+    def current_workspace_name(request: Request) -> str:
+        workspace_name = getattr(request.state, "workspace_name", DEFAULT_WORKSPACE_NAME)
+        if isinstance(workspace_name, str) and workspace_name.strip():
+            return workspace_name
+        return DEFAULT_WORKSPACE_NAME
+
+    def current_store(request: Request) -> ReportStore:
+        store = getattr(request.state, "workspace_store", None)
+        if isinstance(store, ReportStore):
+            return store
+        workspace_name = current_workspace_name(request)
+        store = manager.ensure_workspace(workspace_name)
+        request.state.workspace_store = store
+        return store
+
+    def workspace_context_for_request(request: Request) -> dict[str, Any]:
+        workspace_name = current_workspace_name(request)
+        return workspace_context(manager.workspaces_root, workspace_name)
+
     @app.get("/", response_class=HTMLResponse)
     def index(
         request: Request, q: str = "", sort: str = "", unnamed: bool = False
     ) -> HTMLResponse:
+        store = current_store(request)
         context = build_index_context(store, q, sort, unnamed)
+        context.update(workspace_context_for_request(request))
         return templates.TemplateResponse(request, "index.html", context)
 
     @app.get("/people", response_class=HTMLResponse)
     def people_index(
         request: Request, q: str = "", sort: str = "", unnamed: bool = False
     ) -> HTMLResponse:
+        store = current_store(request)
         context = build_people_context(store, q, sort, unnamed)
+        context.update(workspace_context_for_request(request))
         return templates.TemplateResponse(request, "people.html", context)
 
     @app.get("/people/{person_id}", response_class=HTMLResponse)
@@ -1877,7 +2209,19 @@ def create_app(report_path: Path | None = None) -> FastAPI:
         sort: str = "",
         unnamed: bool = False,
     ) -> HTMLResponse:
+        store = current_store(request)
         context = build_person_context(store, person_id, q, sort, unnamed)
+        context.update(workspace_context_for_request(request))
+        workspace_names = request.state.workspace_names
+        current_name = current_workspace_name(request)
+        context["transfer_target_workspace"] = current_name
+        context["transfer_target_options"] = [
+            workspace_name
+            for workspace_name in workspace_names
+            if workspace_name != current_name
+        ]
+        context["transfer_preview"] = None
+        context["transfer_mode"] = "copy"
         return templates.TemplateResponse(request, "person.html", context)
 
     @app.get("/images/{image_id}", response_class=HTMLResponse)
@@ -1888,11 +2232,16 @@ def create_app(report_path: Path | None = None) -> FastAPI:
         sort: str = "",
         unnamed: bool = False,
     ) -> HTMLResponse:
+        store = current_store(request)
         context = build_image_detail_context(store, image_id, q, sort, unnamed)
+        context.update(workspace_context_for_request(request))
         return templates.TemplateResponse(request, "image.html", context)
 
     @app.get("/media/person-preview/{image_id}/{person_id}")
-    def person_preview_media(image_id: str, person_id: int) -> Response:
+    def person_preview_media(
+        request: Request, image_id: str, person_id: int
+    ) -> Response:
+        store = current_store(request)
         with store.lock:
             image_lookup = store.image_index()
             person_lookup = store.person_index()
@@ -1904,9 +2253,9 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             if not isinstance(image_value, str):
                 raise HTTPException(status_code=404, detail="Image path missing.")
 
-            image_path = resolve_media_path(store.report_path, image_value)
+            image_path = original_media_path(store, image_value)
             person = person_lookup.get(person_id)
-            bbox = person_preview_bbox(entry, person_id, person)
+            bbox = person_preview_bbox(entry, person_id, person, store.workspace_dir)
             if bbox is None or image_path is None or not image_path.exists():
                 return Response(
                     content=placeholder_svg_bytes(
@@ -1933,7 +2282,10 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             )
 
     @app.get("/media/face-preview/{image_id}/{face_index}")
-    def face_preview_media(image_id: str, face_index: int) -> Response:
+    def face_preview_media(
+        request: Request, image_id: str, face_index: int
+    ) -> Response:
+        store = current_store(request)
         with store.lock:
             entry = store.image_index().get(image_id)
             if entry is None:
@@ -1964,7 +2316,7 @@ def create_app(report_path: Path | None = None) -> FastAPI:
                 )
 
             bbox = face.get("bbox")
-            image_path = resolve_media_path(store.report_path, image_value)
+            image_path = original_media_path(store, image_value)
             if (
                 not isinstance(bbox, list)
                 or len(bbox) != 4
@@ -1995,7 +2347,8 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             )
 
     @app.get("/media/original/{image_id}")
-    def original_media(image_id: str) -> FileResponse:
+    def original_media(request: Request, image_id: str) -> FileResponse:
+        store = current_store(request)
         with store.lock:
             entry = store.image_index().get(image_id)
             if entry is None:
@@ -2005,7 +2358,7 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             if not isinstance(image_value, str):
                 raise HTTPException(status_code=404, detail="Image path missing.")
 
-            path = resolve_media_path(store.report_path, image_value)
+            path = original_media_path(store, image_value)
             if path is None or not path.exists():
                 raise HTTPException(
                     status_code=404, detail="Original image file not found."
@@ -2014,7 +2367,8 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             return FileResponse(path, headers={"Cache-Control": "no-store"})
 
     @app.get("/media/annotated/{image_id}")
-    def annotated_media(image_id: str) -> FileResponse:
+    def annotated_media(request: Request, image_id: str) -> FileResponse:
+        store = current_store(request)
         with store.lock:
             entry = store.image_index().get(image_id)
             if entry is None:
@@ -2029,7 +2383,10 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             return FileResponse(path, headers={"Cache-Control": "no-store"})
 
     @app.post("/uploads")
-    async def upload_image(image: list[UploadFile] = File(...)) -> JSONResponse:
+    async def upload_image(
+        request: Request, image: list[UploadFile] = File(...)
+    ) -> JSONResponse:
+        store = current_store(request)
         uploads = image or []
         results: list[dict[str, str]] = []
         logger.warning("Received %d uploaded files.", len(uploads))
@@ -2062,39 +2419,46 @@ def create_app(report_path: Path | None = None) -> FastAPI:
 
     @app.post("/images/{image_id}/people/{person_id}")
     def update_image_person(
+        request: Request,
         image_id: str,
         person_id: int,
         name: str = Form(""),
         merge_into: str = Form(""),
     ) -> RedirectResponse:
+        store = current_store(request)
         with store.lock:
             if image_id not in store.image_index():
                 raise HTTPException(status_code=404, detail="Image not found.")
 
-            _, affected_images = update_person_profile(person_id, name, merge_into)
+            _, affected_images = update_person_profile(
+                store, person_id, name, merge_into
+            )
             store.save()
             store.re_render_images(affected_images)
 
         return RedirectResponse(url=f"/images/{image_id}", status_code=303)
 
     @app.post("/images/{image_id}/delete")
-    def delete_image(image_id: str) -> RedirectResponse:
+    def delete_image(request: Request, image_id: str) -> RedirectResponse:
+        store = current_store(request)
         with store.lock:
             store.delete_image(image_id)
         return RedirectResponse(url="/", status_code=303)
 
     @app.post("/people/{person_id}")
     def update_people_person(
+        request: Request,
         person_id: int,
         name: str = Form(""),
         merge_into: str = Form(""),
     ) -> RedirectResponse:
+        store = current_store(request)
         with store.lock:
             if person_id not in store.person_index():
                 raise HTTPException(status_code=404, detail="Person not found.")
 
             target_id, affected_images = update_person_profile(
-                person_id, name, merge_into
+                store, person_id, name, merge_into
             )
             store.save()
             store.re_render_images(affected_images)
@@ -2103,10 +2467,12 @@ def create_app(report_path: Path | None = None) -> FastAPI:
 
     @app.post("/people/{person_id}/split")
     def split_person_images(
+        request: Request,
         person_id: int,
         selected_images: list[str] = Form(default=[]),
         new_name: str = Form(""),
     ) -> RedirectResponse:
+        store = current_store(request)
         with store.lock:
             if person_id not in store.person_index():
                 raise HTTPException(status_code=404, detail="Person not found.")
@@ -2131,17 +2497,103 @@ def create_app(report_path: Path | None = None) -> FastAPI:
 
         return RedirectResponse(url=f"/people/{new_person_id}", status_code=303)
 
+    @app.post("/workspaces/select")
+    def select_workspace(
+        request: Request, workspace: str = Form("")
+    ) -> RedirectResponse:
+        cleaned_workspace = validate_workspace_name(workspace)
+        if cleaned_workspace not in request.state.workspace_names:
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+
+        response = RedirectResponse(url="/", status_code=303)
+        set_workspace_cookie(response, cleaned_workspace)
+        return response
+
+    @app.post("/workspaces/create")
+    def create_workspace(
+        request: Request, workspace: str = Form("")
+    ) -> RedirectResponse:
+        cleaned_workspace = validate_workspace_name(workspace)
+        manager.ensure_workspace(cleaned_workspace)
+        response = RedirectResponse(url="/", status_code=303)
+        set_workspace_cookie(response, cleaned_workspace)
+        return response
+
+    @app.post("/people/{person_id}/transfer")
+    def transfer_person(
+        request: Request,
+        person_id: int,
+        target_workspace: str = Form(""),
+        transfer_mode: str = Form("copy"),
+        transfer_choice: str = Form(""),
+    ) -> Response:
+        source_store = current_store(request)
+        cleaned_target_workspace = validate_workspace_name(target_workspace)
+        if cleaned_target_workspace == current_workspace_name(request):
+            raise HTTPException(
+                status_code=400, detail="Choose a different workspace to transfer to."
+            )
+
+        target_store = manager.ensure_workspace(cleaned_target_workspace)
+        if person_id not in source_store.person_index():
+            raise HTTPException(status_code=404, detail="Person not found.")
+
+        q = request.query_params.get("q", "")
+        sort = request.query_params.get("sort", "")
+        unnamed = request.query_params.get("unnamed") == "1"
+        preview = source_store.person_transfer_preview(person_id)
+        mixed_images = preview["mixed_image_count"] > 0
+
+        if transfer_mode == "move" and not transfer_choice and mixed_images:
+            context = build_person_context(source_store, person_id, q, sort, unnamed)
+            context.update(workspace_context_for_request(request))
+            context["transfer_target_workspace"] = cleaned_target_workspace
+            context["transfer_target_options"] = [
+                workspace_name
+                for workspace_name in request.state.workspace_names
+                if workspace_name != current_workspace_name(request)
+            ]
+            context["transfer_preview"] = preview
+            context["transfer_mode"] = "move"
+            context["transfer_choice"] = ""
+            return templates.TemplateResponse(request, "person.html", context)
+
+        move_linked = transfer_mode == "move"
+        if transfer_choice == "copy_only":
+            move_linked = False
+        elif transfer_choice == "move_linked":
+            move_linked = True
+
+        first_store, second_store = sorted(
+            [source_store, target_store], key=lambda item: str(item.report_path)
+        )
+        with first_store.lock:
+            with second_store.lock:
+                new_person_id, source_affected, target_affected = (
+                    source_store.transfer_person_to_workspace(
+                        person_id, target_store, move_linked
+                    )
+                )
+                source_store.save()
+                target_store.save()
+                source_store.re_render_images(source_affected)
+                target_store.re_render_images(target_affected)
+
+        response = RedirectResponse(url=f"/people/{new_person_id}", status_code=303)
+        set_workspace_cookie(response, cleaned_target_workspace)
+        return response
+
     return app
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
-    "--report",
-    "report_path",
-    type=click.Path(path_type=Path, dir_okay=False, exists=False),
-    default=DEFAULT_REPORT_PATH,
+    "--workspaces-dir",
+    "workspaces_dir",
+    type=click.Path(path_type=Path, file_okay=False, exists=False),
+    default=None,
     show_default=True,
-    help="Path to the JSON report to load and update.",
+    help="Path to the directory that contains workspace folders.",
 )
 @click.option(
     "--host",
@@ -2162,15 +2614,15 @@ def create_app(report_path: Path | None = None) -> FastAPI:
     show_default=True,
     help="Restart the server when Python files or built frontend assets change.",
 )
-def main(report_path: Path, host: str, port: int, reload: bool) -> None:
-    resolved_report_path = resolve_report_path(report_path)
-    os.environ[REPORT_PATH_ENV] = str(resolved_report_path)
+def main(workspaces_dir: Path | None, host: str, port: int, reload: bool) -> None:
+    resolved_workspaces_root = resolve_workspaces_root(workspaces_dir)
+    os.environ[WORKSPACES_DIR_ENV] = str(resolved_workspaces_root)
     package_dir = Path(__file__).resolve().parent
     reload_dirs = [
         str(package_dir),
         str(package_dir / "static" / "dist"),
     ]
-    click.echo(f"Serving {resolved_report_path} at http://{host}:{port}")
+    click.echo(f"Serving workspaces in {resolved_workspaces_root} at http://{host}:{port}")
     uvicorn.run(
         "image_yolo_faces.webui:create_app",
         factory=True,

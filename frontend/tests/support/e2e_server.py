@@ -9,6 +9,13 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from image_yolo_faces import webui
+from image_yolo_faces.workspaces import (
+    DEFAULT_WORKSPACE_NAME,
+    ensure_workspace_layout,
+    workspace_annotated_dir,
+    workspace_photos_dir,
+    workspace_report_path,
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -31,11 +38,12 @@ def make_fixture_image(path: Path, color: tuple[int, int, int], label: str) -> N
     image.save(path)
 
 
-def seed_workspace(workspace: Path) -> Path:
-    photos_dir = workspace / "photos"
-    annotated_dir = workspace / "annotated"
-    photos_dir.mkdir(parents=True, exist_ok=True)
-    annotated_dir.mkdir(parents=True, exist_ok=True)
+def seed_workspace(workspace_root: Path) -> Path:
+    ensure_workspace_layout(workspace_root, DEFAULT_WORKSPACE_NAME)
+    ensure_workspace_layout(workspace_root, "archive")
+
+    photos_dir = workspace_photos_dir(workspace_root, DEFAULT_WORKSPACE_NAME)
+    annotated_dir = workspace_annotated_dir(workspace_root, DEFAULT_WORKSPACE_NAME)
 
     repo_root = Path(__file__).resolve().parents[3]
     seed_fixture = repo_root / "frontend" / "tests" / "fixtures" / "zebra.png"
@@ -47,21 +55,19 @@ def seed_workspace(workspace: Path) -> Path:
     shutil.copyfile(seed_fixture, zebra_image)
     make_fixture_image(apple_image, (154, 103, 44), "apple")
 
-    apple_annotated = annotated_dir / "apple_faces.png"
-    zebra_annotated = annotated_dir / "zebra_faces.png"
+    apple_annotated = annotated_dir / "apple.png"
+    zebra_annotated = annotated_dir / "zebra.png"
     shutil.copyfile(apple_image, apple_annotated)
     shutil.copyfile(zebra_image, zebra_annotated)
 
     apple_bbox = [16.0, 16.0, 72.0, 72.0]
     zebra_bbox = [18.0, 18.0, 74.0, 74.0]
 
-    apple_path = str(apple_image.resolve())
-    zebra_path = str(zebra_image.resolve())
     report = {
         "group_by_person": False,
         "images": [
             {
-                "image": apple_path,
+                "image": "apple.png",
                 "face_count": 1,
                 "faces": [
                     {
@@ -71,11 +77,10 @@ def seed_workspace(workspace: Path) -> Path:
                     }
                 ],
                 "added_at": 1_000_000_000,
-                "annotated_image": "annotated/apple_faces.png",
                 "hashes": {"sha256": sha256_file(apple_image)},
             },
             {
-                "image": zebra_path,
+                "image": "zebra.png",
                 "face_count": 2,
                 "faces": [
                     {
@@ -90,7 +95,6 @@ def seed_workspace(workspace: Path) -> Path:
                     },
                 ],
                 "added_at": 2_000_000_000,
-                "annotated_image": "annotated/zebra_faces.png",
                 "hashes": {"sha256": sha256_file(zebra_image)},
             },
         ],
@@ -104,14 +108,14 @@ def seed_workspace(workspace: Path) -> Path:
                 "aliases": [],
                 "faces": [
                     {
-                        "image": apple_path,
+                        "image": "apple.png",
                         "face_index": 0,
                         "bbox": apple_bbox,
                         "confidence": 0.97,
                         "person_id": 1,
                     },
                     {
-                        "image": zebra_path,
+                        "image": "zebra.png",
                         "face_index": 0,
                         "bbox": zebra_bbox,
                         "confidence": 0.96,
@@ -127,7 +131,7 @@ def seed_workspace(workspace: Path) -> Path:
                 "aliases": [],
                 "faces": [
                     {
-                        "image": zebra_path,
+                        "image": "zebra.png",
                         "face_index": 1,
                         "bbox": zebra_bbox,
                         "confidence": 0.95,
@@ -138,7 +142,7 @@ def seed_workspace(workspace: Path) -> Path:
         ],
     }
 
-    report_path = workspace / "faces.json"
+    report_path = workspace_report_path(workspace_root, DEFAULT_WORKSPACE_NAME)
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report_path
 
@@ -152,11 +156,10 @@ def fake_scan_image_entry(**kwargs):
 
     return (
         {
-            "image": str(image_path.resolve()),
+            "image": image_path.name,
             "face_count": 0,
             "faces": [],
             "added_at": int(kwargs["added_at_ns"]),
-            "annotated_image": str(annotated_path) if annotated_path is not None else None,
             "hashes": {},
         },
         int(kwargs["next_person_id"]),
@@ -165,17 +168,17 @@ def fake_scan_image_entry(**kwargs):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--workspaces-root", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", required=True, type=int)
     args = parser.parse_args()
 
-    workspace = Path(args.workspace)
-    workspace.mkdir(parents=True, exist_ok=True)
-    report_path = seed_workspace(workspace)
+    workspaces_root = Path(args.workspaces_root)
+    workspaces_root.mkdir(parents=True, exist_ok=True)
+    seed_workspace(workspaces_root)
 
     webui.scan_image_entry = fake_scan_image_entry  # type: ignore[assignment]
-    app = webui.create_app(report_path)
+    app = webui.create_app(workspaces_root)
 
     import uvicorn
 

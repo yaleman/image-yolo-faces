@@ -27,8 +27,19 @@ IMAGE_EXTENSIONS = {
 }
 
 
-def normalize_image_key(image_path: Path | str) -> str:
-    return str(Path(image_path).resolve())
+def normalize_image_key(image_path: Path | str, base_dir: Path | None = None) -> str:
+    path = Path(image_path)
+    if base_dir is not None:
+        return path.name
+    return str(path.resolve())
+
+
+def stored_media_path(path: Path, storage_root: Path | None = None) -> str:
+    resolved = path.resolve()
+    if storage_root is None:
+        return str(resolved)
+
+    return path.name
 
 
 def normalize_image_entry(entry: dict[str, Any]) -> None:
@@ -394,9 +405,11 @@ def scan_image_entry(
     person_threshold: float,
     people: list[dict[str, Any]],
     next_person_id: int,
+    storage_root: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     detections = detect_faces(model, image_path, confidence)
     faces = detections_to_faces(detections)
+    stored_image_value = stored_media_path(image_path, storage_root)
 
     if group_by_person:
         embeddings = match_embeddings_to_detections(face_encoder, image_path, faces)
@@ -404,7 +417,7 @@ def scan_image_entry(
             if embedding is None:
                 continue
             face_record = {
-                "image": normalize_image_key(image_path),
+                "image": stored_image_value,
                 "face_index": face_index,
                 "bbox": face["bbox"],
                 "confidence": face["confidence"],
@@ -423,13 +436,10 @@ def scan_image_entry(
 
     return (
         {
-            "image": normalize_image_key(image_path),
+            "image": stored_image_value,
             "face_count": len(faces),
             "faces": faces,
             "added_at": added_at_ns,
-            "annotated_image": str(annotated_path)
-            if annotated_path is not None
-            else None,
             "hashes": hashes_for_file(image_path),
         },
         next_person_id,

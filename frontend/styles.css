@@ -76,11 +76,99 @@ html {
   }
 
   .site-bar {
-    @apply mx-auto flex max-w-[1440px] items-center justify-between gap-3 px-4 pt-3;
+    @apply mx-auto flex max-w-[1440px] flex-wrap items-start justify-between gap-3 px-4 pt-3;
+  }
+
+  .site-bar-left,
+  .site-bar-right {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  .site-bar-right {
+    @apply ml-auto justify-end;
   }
 
   .site-brand {
     @apply flex-none text-[0.9rem] font-semibold tracking-[0.02em] no-underline lowercase;
+  }
+
+  .workspace-switcher {
+    @apply relative;
+  }
+
+  .workspace-chip {
+    border: 1px solid var(--line);
+    background: rgba(255, 250, 243, 0.9);
+    box-shadow: var(--shadow-soft);
+    @apply inline-flex cursor-pointer list-none items-center gap-2 rounded-full px-3 py-2;
+  }
+
+  .workspace-chip::-webkit-details-marker {
+    display: none;
+  }
+
+  .workspace-chip-label,
+  .workspace-field-label {
+    color: var(--muted);
+    @apply text-[0.78rem] uppercase tracking-[0.14em];
+  }
+
+  .workspace-chip-value {
+    @apply text-[0.95rem] font-semibold;
+  }
+
+  .workspace-chip-caret {
+    color: var(--muted);
+    @apply text-[0.85rem];
+  }
+
+  .workspace-switcher-panel {
+    border: 1px solid var(--line);
+    background: rgba(255, 250, 243, 0.98);
+    box-shadow: var(--shadow);
+    @apply absolute left-0 top-[calc(100%+0.75rem)] z-20 grid min-w-[18rem] gap-3 rounded-2xl p-3;
+  }
+
+  .workspace-switcher-list {
+    @apply grid gap-1;
+  }
+
+  .workspace-switcher-form {
+    @apply block;
+  }
+
+  .workspace-switcher-button {
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--ink);
+    @apply flex w-full items-center justify-start rounded-xl px-3 py-2 text-left text-[0.95rem] transition-colors;
+  }
+
+  .workspace-switcher-button:hover {
+    background: rgba(138, 90, 43, 0.08);
+  }
+
+  .workspace-switcher-button.is-active,
+  .workspace-switcher-button:disabled {
+    background: rgba(138, 90, 43, 0.12);
+    color: var(--accent);
+    cursor: default;
+  }
+
+  .workspace-switcher-button:disabled:hover {
+    background: rgba(138, 90, 43, 0.12);
+  }
+
+  .workspace-form {
+    @apply flex flex-wrap items-end gap-2;
+  }
+
+  .workspace-create {
+    @apply min-w-[12rem];
+  }
+
+  .workspace-create input {
+    @apply w-full;
   }
 
   .page-header {
@@ -273,6 +361,32 @@ html {
   .page-actions,
   .chip-list {
     @apply flex flex-wrap items-center gap-2.5;
+  }
+
+  .person-transfer {
+    @apply gap-4;
+  }
+
+  .transfer-warning {
+    border: 1px solid rgba(138, 90, 43, 0.35);
+    background: rgba(255, 244, 228, 0.9);
+    @apply grid gap-2 rounded-[1rem] p-3;
+  }
+
+  .transfer-warning strong {
+    @apply text-[0.98rem];
+  }
+
+  .transfer-warning-list {
+    @apply m-0 grid list-disc gap-1.5 pl-5 text-[0.92rem];
+  }
+
+  .transfer-warning-actions {
+    @apply mt-2;
+  }
+
+  .transfer-action-form {
+    @apply flex flex-col gap-2;
   }
 
   .sort-links {
@@ -582,6 +696,23 @@ html {
   .page-header,
   .person-card-header {
     @apply flex-col items-start;
+  }
+
+  .site-bar-right {
+    @apply w-full justify-start;
+  }
+
+  .workspace-switcher {
+    @apply w-full;
+  }
+
+  .workspace-switcher-panel {
+    @apply w-full;
+    max-width: calc(100vw - 2rem);
+  }
+
+  .workspace-form {
+    @apply w-full;
   }
 
   .search-bar-global {

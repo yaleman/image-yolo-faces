@@ -2,38 +2,56 @@
 
 Batch face detection for image folders using the `arnabdhar/YOLOv8-Face-Detection` model from Hugging Face.
 
+## Layout
+
+The app now stores data in workspaces. By default they live under `./workspaces`, or you can override that with `FACES_WORKSPACES_DIR`.
+
+Each workspace contains:
+
+- `faces.json`
+- `photos/`
+- `annotated/`
+
+`faces.json` stores filenames only. The UI loads originals from `photos/` and derives annotated media from the same filename under `annotated/`.
+
+The `default` workspace is created on demand and is used when no workspace is selected.
+
 ## Setup
 
 ```bash
 uv sync
 ```
 
-## Usage
+## CLI
 
-Scan a directory of images and write a JSON report:
+Scan a folder into the default workspace:
 
 ```bash
-uv run image-yolo-faces ./photos --output faces.json
+uv run image-yolo-faces ./photos
 ```
 
-If `faces.json` already exists, the CLI reuses entries for image paths it has already seen and only runs the model on new images.
-
-Write annotated images as well:
+Write into a named workspace:
 
 ```bash
-uv run image-yolo-faces ./photos --output faces.json --annotated-dir annotated
+uv run image-yolo-faces ./photos --workspace family_2026
+```
+
+Use a different workspace root:
+
+```bash
+uv run image-yolo-faces ./photos --workspaces-dir /data/faces-workspaces
 ```
 
 Group faces by person using embeddings:
 
 ```bash
-uv run image-yolo-faces ./photos --output faces.json --group-by-person
+uv run image-yolo-faces ./photos --group-by-person
 ```
 
 If the clustering is too coarse or too fragmented, tune:
 
 ```bash
-uv run image-yolo-faces ./photos --output faces.json --group-by-person --person-threshold 0.50
+uv run image-yolo-faces ./photos --group-by-person --person-threshold 0.50
 ```
 
 Useful options:
@@ -42,13 +60,15 @@ Useful options:
 uv run image-yolo-faces --help
 ```
 
-Run the review UI against the saved report:
+## Web UI
+
+Run the review UI against the workspaces root:
 
 ```bash
 uv run image-yolo-faces-web
 ```
 
-The web UI looks for `faces.json` in the current directory by default. Pass `--report` only if your report lives somewhere else.
+The web UI reads and writes the active workspace selected in the browser cookie. The header includes a workspace switcher and a create-workspace form. Workspace transfers on a person page can copy a person into another workspace or move the linked images/faces, with a warning when mixed images are involved.
 
 For live code reloading while developing:
 
@@ -56,7 +76,7 @@ For live code reloading while developing:
 uv run image-yolo-faces-web --reload
 ```
 
-The web UI shows the annotated image list first. Click any image to open a review page where you can assign a name to a person, or merge that cluster into an existing person if it was a mismatch. If an annotated preview is missing, the UI regenerates it on demand the first time it is requested.
+The web UI shows the annotated image list first. Click any image to open a review page where you can assign a name to a person, merge that cluster into an existing person, or split selected images into a new person. If an annotated preview is missing, the UI regenerates it on demand the first time it is requested.
 
 The CLI downloads `model.pt` from the model repository on first use, loads it with `ultralytics.YOLO`, and parses the detections with `supervision.Detections.from_ultralytics(...)`, matching the model card example.
 
