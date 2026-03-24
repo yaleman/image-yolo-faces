@@ -561,9 +561,7 @@ function bindUploadRoot(root: HTMLElement): void {
 
       const kind = errorCount > 0 ? "error" : "success";
       setFeedback(feedback, kind, `${summaryParts.join(" • ")}.`);
-      window.setTimeout(() => {
-        window.location.reload();
-      }, 500);
+      window.location.replace(window.location.href);
     } catch (error) {
       console.error(error);
       if (disclosure) {

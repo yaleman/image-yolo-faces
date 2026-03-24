@@ -363,13 +363,16 @@ def cli(
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        click.echo(f"Wrote JSON report to {output_path}")
+        click.echo(f"Wrote JSON report to {output_path}", err=True)
     else:
         click.echo(json.dumps(report, indent=2))
 
     image_count = len(report["images"])
     face_count = sum(image["face_count"] for image in report["images"])
-    click.echo(f"Processed {image_count} image(s) and found {face_count} face(s).")
+    click.echo(
+        f"Processed {image_count} image(s) and found {face_count} face(s).",
+        err=True,
+    )
 
     if annotated_dir is not None:
-        click.echo(f"Annotated images were written under {annotated_dir}")
+        click.echo(f"Annotated images were written under {annotated_dir}", err=True)

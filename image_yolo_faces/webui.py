@@ -1776,7 +1776,9 @@ def build_image_detail_context(
                 {
                     "person_id": person_id,
                     "name": display_name,
-                    "detail_url": with_query(f"/people/{person_id}", query),
+                    "detail_url": with_query(
+                        f"/people/{person_id}", query, sort_query, unnamed_only
+                    ),
                     "name_input": display_name
                     if display_name != f"Person {person_id}"
                     else "",

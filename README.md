@@ -66,9 +66,11 @@ Annotated images use a stable color per person when grouping is enabled.
 
 ## Development
 
-Before considering a change done, run both of these checks and fix any failures:
+Before considering a change done, run the repo checks and fix any failures:
 
 ```bash
-uv run ruff check .
-uv run ty check
+mise check
+pnpm test:e2e
 ```
+
+Use `pnpm test:e2e:coverage` when you need the frontend coverage report.
