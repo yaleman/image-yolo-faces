@@ -11,6 +11,8 @@ dist/
 **/__pycache__/*
 .venv
 node_modules/
+.coverage
+.coverage.*
 
 
 annotated/
@@ -21,5 +23,6 @@ photos/
 faces.json
 .playwright-cli/
 output/playwright/
+output/python-coverage/
 !image_yolo_faces/static/dist/
 !image_yolo_faces/static/dist/**

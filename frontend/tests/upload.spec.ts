@@ -1,7 +1,7 @@
 import path from "node:path";
-import { expect, test } from "@playwright/test";
 
 import { startE2EServer } from "./support/server";
+import { expect, test } from "./support/test";
 
 const fixture = (name: string): string =>
   path.join(process.cwd(), "frontend/tests/fixtures", name);

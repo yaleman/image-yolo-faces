@@ -1,6 +1,5 @@
-import { expect, test } from "@playwright/test";
-
 import { startE2EServer } from "./support/server";
+import { expect, test } from "./support/test";
 
 test("people and person views sort by added time and name", async ({
   page,

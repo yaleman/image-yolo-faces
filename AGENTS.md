@@ -37,8 +37,11 @@ This repository uses a single JSON report as the source of truth for both the CL
 - Annotated images and face previews are derived media, not primary state.
 - The web UI serves server-rendered Jinja templates and loads built frontend assets from `image_yolo_faces/static/dist`.
 - Frontend source lives under `frontend/` and is built with Vite, Tailwind, and TypeScript. Built assets are committed so the packaged app can run without a runtime frontend build.
+- Vite emits stable committed asset names under `image_yolo_faces/static/dist` so the bundle stays diff-friendly while still using the manifest for lookup.
 - Biome is the formatter/linter for frontend files, and TypeScript checks run through the repo `tsconfig.json`.
 - Playwright e2e tests live under `frontend/tests/` and exercise the real browser against a lightweight test server that stubs face scanning for deterministic UI coverage.
+- Playwright coverage runs in Chromium with `PW_COLLECT_COVERAGE=1 pnpm test:e2e:coverage` and writes the report under `output/playwright/coverage/`.
+- Python coverage runs with `mise python-coverage` and writes the HTML report under `output/python-coverage/`.
 
 ## Python Rules
 

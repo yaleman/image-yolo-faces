@@ -6,8 +6,12 @@
     "@playwright/test": "^1.58.2",
     "@tailwindcss/vite": "^4.2.2",
     "@types/node": "^25.5.0",
+    "istanbul-lib-coverage": "^3.2.2",
+    "istanbul-lib-report": "^3.0.1",
+    "istanbul-reports": "^3.2.0",
     "tailwindcss": "^4.2.2",
     "typescript": "^6.0.2",
+    "v8-to-istanbul": "^9.3.0",
     "vite": "^8.0.2"
   },
   "name": "image-yolo-faces",
@@ -16,6 +20,7 @@
     "build": "vite build",
     "check": "biome check frontend vite.config.js playwright.config.ts biome.json",
     "format": "biome format --write frontend vite.config.js playwright.config.ts biome.json",
-    "test:e2e": "pnpm build && playwright test"
+    "test:e2e": "pnpm build && playwright test",
+    "test:e2e:coverage": "rm -rf output/playwright && pnpm build && PW_COLLECT_COVERAGE=1 playwright test && node frontend/tests/support/coverage-report.mjs"
   }
 }

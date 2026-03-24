@@ -12,6 +12,16 @@ run = [
 depends = ["frontend-check"]
 run = ["vite build"]
 
+[tasks.coverage-frontend]
+run = "pnpm test:e2e:coverage"
+
+[tasks.coverage-frontend-open]
+depends = ["coverage-frontend"]
+run = ["open output/playwright/coverage/index.html"]
+
+[tasks.python-coverage]
+run = "rm -rf output/python-coverage && COVERAGE_FILE=output/python-coverage/.coverage uv run pytest --cov=image_yolo_faces --cov-report=term-missing --cov-report=html:output/python-coverage"
+
 
 [tasks.ruff]
 run = "uv run ruff check"
