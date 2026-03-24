@@ -13,7 +13,9 @@ type UploadElements = {
   filename: HTMLElement;
   form: HTMLFormElement;
   input: HTMLInputElement;
+  overlayBody: HTMLElement;
   overlay: HTMLElement;
+  overlayTitle: HTMLElement;
   submit: HTMLButtonElement;
 };
 
@@ -48,6 +50,7 @@ function assignFile(input: HTMLInputElement, file: File): void {
 
 function hideOverlay(root: HTMLElement, overlay: HTMLElement): void {
   root.classList.remove("is-drag-over");
+  root.classList.remove("is-uploading");
   overlay.classList.add("hidden");
 }
 
@@ -63,15 +66,40 @@ function getUploadElements(root: Element): UploadElements | null {
   const filename = root.querySelector<HTMLElement>("[data-upload-filename]");
   const submit = root.querySelector<HTMLButtonElement>("[data-upload-submit]");
   const overlay = root.querySelector<HTMLElement>("[data-upload-overlay]");
+  const overlayTitle = root.querySelector<HTMLElement>(
+    "[data-upload-overlay-title]",
+  );
+  const overlayBody = root.querySelector<HTMLElement>(
+    "[data-upload-overlay-body]",
+  );
   const disclosure = root.querySelector<HTMLDetailsElement>(
     "[data-upload-disclosure]",
   );
 
-  if (!form || !input || !feedback || !filename || !submit || !overlay) {
+  if (
+    !form ||
+    !input ||
+    !feedback ||
+    !filename ||
+    !submit ||
+    !overlay ||
+    !overlayTitle ||
+    !overlayBody
+  ) {
     return null;
   }
 
-  return { disclosure, feedback, filename, form, input, overlay, submit };
+  return {
+    disclosure,
+    feedback,
+    filename,
+    form,
+    input,
+    overlay,
+    overlayBody,
+    overlayTitle,
+    submit,
+  };
 }
 
 function bindUploadRoot(root: HTMLElement): void {
@@ -80,13 +108,29 @@ function bindUploadRoot(root: HTMLElement): void {
     return;
   }
 
-  const { disclosure, feedback, filename, form, input, overlay, submit } =
-    elements;
+  const {
+    disclosure,
+    feedback,
+    filename,
+    form,
+    input,
+    overlay,
+    overlayBody,
+    overlayTitle,
+    submit,
+  } = elements;
   let dragDepth = 0;
+  let keepOverlayVisible = false;
 
   const setBusy = (busy: boolean): void => {
     submit.disabled = busy;
     submit.textContent = busy ? "Uploading..." : "Upload image";
+    overlayTitle.textContent = busy
+      ? "Processing..."
+      : "Drop one image anywhere to import it";
+    overlayBody.textContent = busy
+      ? "Uploading the image, checking its hash, and scanning for faces."
+      : "We will check the SHA-256 hash, reuse an existing record if it already exists, or scan and add it if it is new.";
   };
 
   const handleFile = (file?: File): void => {
@@ -99,11 +143,19 @@ function bindUploadRoot(root: HTMLElement): void {
     clearFeedback(feedback);
   };
 
-  const submitFile = async (file: File): Promise<void> => {
+  const submitFile = async (
+    file: File,
+    options: { keepOverlay?: boolean } = {},
+  ): Promise<void> => {
+    keepOverlayVisible = options.keepOverlay === true;
     handleFile(file);
     const formData = new FormData();
     formData.set("image", file, file.name);
     setBusy(true);
+    if (keepOverlayVisible) {
+      root.classList.add("is-uploading");
+      showOverlay(root, overlay);
+    }
 
     try {
       const response = await fetch(form.action, {
@@ -116,6 +168,7 @@ function bindUploadRoot(root: HTMLElement): void {
         if (disclosure) {
           disclosure.open = true;
         }
+        hideOverlay(root, overlay);
         setFeedback(
           feedback,
           "error",
@@ -139,15 +192,22 @@ function bindUploadRoot(root: HTMLElement): void {
         window.setTimeout(() => {
           window.location.assign(detailUrl);
         }, 500);
+      } else {
+        hideOverlay(root, overlay);
       }
     } catch (error) {
       console.error(error);
       if (disclosure) {
         disclosure.open = true;
       }
+      hideOverlay(root, overlay);
       setFeedback(feedback, "error", "Upload failed. Please try again.");
     } finally {
       setBusy(false);
+      if (!keepOverlayVisible) {
+        hideOverlay(root, overlay);
+      }
+      keepOverlayVisible = false;
     }
   };
 
@@ -177,6 +237,9 @@ function bindUploadRoot(root: HTMLElement): void {
     if (!isFileDrag(event)) {
       return;
     }
+    if (root.classList.contains("is-uploading")) {
+      return;
+    }
     dragDepth = Math.max(0, dragDepth - 1);
     if (dragDepth === 0 && event.relatedTarget === null) {
       hideOverlay(root, overlay);
@@ -189,7 +252,9 @@ function bindUploadRoot(root: HTMLElement): void {
     }
     event.preventDefault();
     dragDepth = 0;
-    hideOverlay(root, overlay);
+    if (!root.classList.contains("is-uploading")) {
+      hideOverlay(root, overlay);
+    }
   });
 
   overlay.addEventListener("dragenter", (event) => {
@@ -214,12 +279,12 @@ function bindUploadRoot(root: HTMLElement): void {
     }
     event.preventDefault();
     dragDepth = 0;
-    hideOverlay(root, overlay);
     const [file] = event.dataTransfer?.files ?? [];
     if (!file) {
+      hideOverlay(root, overlay);
       return;
     }
-    void submitFile(file);
+    void submitFile(file, { keepOverlay: true });
   });
 
   overlay.addEventListener("click", () => {

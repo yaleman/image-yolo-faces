@@ -2,13 +2,29 @@
 biome = "latest"
 pnpm = "latest"
 
-[tasks.js-check]
-run = ["biome check frontend vite.config.js biome.json --fix"]
+[tasks.frontend-check]
+run = [
+    "pnpm exec tsc --noEmit --project tsconfig.json",
+    "biome check frontend vite.config.js biome.json --fix",
+]
 
 [tasks.build-frontend]
-depends = ["js-check"]
-run = ["pnpm build"]
+depends = ["frontend-check"]
+run = ["vite build"]
+
+
+[tasks.ruff]
+run = "uv run ruff check"
+
+[tasks.ty]
+run = "uv run ty check"
+
+[tasks.python-check]
+depends = ["ruff", "ty"]
+
+[tasks.check]
+depends = ["frontend-check", "python-check"]
 
 [tasks.start]
-depends = ["build-frontend"]
+depends = ["build-frontend", "python-check"]
 run = ["uv run image-yolo-faces-web --reload"]

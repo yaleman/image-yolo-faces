@@ -19,32 +19,34 @@
   </div>
 </section>
 
-<details class="panel upload-panel upload-disclosure" data-upload-root data-upload-disclosure>
-  <summary class="upload-summary">
-    <span class="section-header">
-      <span class="section-title">Add image</span>
-    </span>
-  </summary>
-  <div class="upload-body stack">
-    <form class="upload-form stack" method="post" action="/uploads" enctype="multipart/form-data" data-upload-form>
-      <input id="upload-image-input" class="sr-only" type="file" name="image" accept="image/*" data-upload-input>
-      <div class="page-actions">
-        <label class="upload-trigger" for="upload-image-input">Choose image</label>
-        <button class="button" type="submit" data-upload-submit>Upload image</button>
-        <span class="meta" data-upload-filename>No file selected</span>
-      </div>
-    </form>
-    <div class="upload-feedback hidden" data-upload-feedback aria-live="polite"></div>
-  </div>
+<section data-upload-root>
+  <details class="panel upload-panel upload-disclosure" data-upload-disclosure>
+    <summary class="upload-summary">
+      <span class="section-header">
+        <span class="section-title">Add image</span>
+      </span>
+    </summary>
+    <div class="upload-body stack">
+      <form class="upload-form stack" method="post" action="/uploads" enctype="multipart/form-data" data-upload-form>
+        <input id="upload-image-input" class="sr-only" type="file" name="image" accept="image/*" data-upload-input>
+        <div class="page-actions">
+          <label class="upload-trigger" for="upload-image-input">Choose image</label>
+          <button class="button" type="submit" data-upload-submit>Upload image</button>
+          <span class="meta" data-upload-filename>No file selected</span>
+        </div>
+      </form>
+      <div class="upload-feedback hidden" data-upload-feedback aria-live="polite"></div>
+    </div>
+  </details>
   <div class="upload-overlay hidden" data-upload-overlay>
     <div class="upload-dropzone" data-upload-dropzone>
       <span class="upload-dropzone-copy">
-        <strong>Drop one image anywhere to import it</strong>
-        <span>We will check the SHA-256 hash, reuse an existing record if it already exists, or scan and add it if it is new.</span>
+        <strong data-upload-overlay-title>Drop one image anywhere to import it</strong>
+        <span data-upload-overlay-body>We will check the SHA-256 hash, reuse an existing record if it already exists, or scan and add it if it is new.</span>
       </span>
     </div>
   </div>
-</details>
+</section>
 
 {% if search_active %}
 {% if people or images %}
@@ -117,7 +119,7 @@
 {% if images %}
 <section class="grid">
   {% for image in images %}
-  <article class="card">
+  <article class="card card-compact">
     <a class="card-link" href="{{ image.detail_url }}">
       <img class="thumb" src="{{ image.annotated_url }}" alt="Annotated preview for {{ image.image_name }}" loading="lazy">
     </a>

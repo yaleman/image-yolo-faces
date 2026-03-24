@@ -833,6 +833,72 @@ class ReportStore:
                 annotated_path.unlink()
             raise
 
+    def delete_image(self, image_id: str) -> None:
+        image_lookup = self.image_index()
+        entry = image_lookup.get(image_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Image not found.")
+
+        image_value = entry.get("image")
+        if not isinstance(image_value, str):
+            raise HTTPException(status_code=404, detail="Image path missing.")
+
+        original_path = Path(image_value)
+        annotated_value = entry.get("annotated_image")
+        annotated_path = resolve_media_path(
+            self.report_path,
+            annotated_value if isinstance(annotated_value, str) else None,
+        )
+
+        for path in [annotated_path, original_path]:
+            if path is None or not path.exists():
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to delete file {path}.",
+                ) from exc
+
+        self.report["images"] = [
+            image for image in self.report["images"] if image is not entry
+        ]
+
+        remaining_people: list[dict[str, Any]] = []
+        for person in self.report["people"]:
+            if not isinstance(person, dict):
+                continue
+            faces = person.get("faces", [])
+            if not isinstance(faces, list):
+                faces = []
+
+            remaining_faces = [
+                face
+                for face in faces
+                if not (
+                    isinstance(face, dict)
+                    and isinstance(face.get("image"), str)
+                    and face.get("image") == image_value
+                )
+            ]
+            if not remaining_faces:
+                continue
+
+            person["faces"] = remaining_faces
+            person["face_count"] = len(remaining_faces)
+            remaining_people.append(person)
+
+        self.report["people"] = remaining_people
+        current_next_id = self.report.get("next_person_id")
+        max_person_id = max(self.person_index().keys(), default=0)
+        if isinstance(current_next_id, int):
+            self.report["next_person_id"] = max(current_next_id, max_person_id + 1)
+        else:
+            self.report["next_person_id"] = max_person_id + 1
+
+        self.save()
+
     def rename_person(self, person_id: int, name: str) -> set[str]:
         person = self.person_index().get(person_id)
         if person is None:
@@ -1306,17 +1372,18 @@ def build_image_detail_context(
         if not isinstance(image_value, str):
             raise HTTPException(status_code=404, detail="Image path missing.")
 
-        person_groups: dict[int, list[dict[str, Any]]] = {}
+        person_groups: dict[int, list[tuple[int, dict[str, Any]]]] = {}
         faces = entry.get("faces", [])
         if isinstance(faces, list):
-            for face in faces:
+            for face_index, face in enumerate(faces):
                 if not isinstance(face, dict):
                     continue
+                face_entry = cast(dict[str, Any], face)
                 try:
-                    person_id = int(face["person_id"])
+                    person_id = int(face_entry["person_id"])
                 except (KeyError, TypeError, ValueError):
                     continue
-                person_groups.setdefault(person_id, []).append(face)
+                person_groups.setdefault(person_id, []).append((face_index, face_entry))
 
         original_path = Path(image_value)
         annotated_path = resolve_media_path(
@@ -1357,12 +1424,25 @@ def build_image_detail_context(
                 )
 
             faces_context = []
-            for face in grouped_faces:
+            for face_index, face in grouped_faces:
+                bbox = face.get("bbox", [])
+                preview_src = placeholder_media(f"Face {face_index + 1}")
+                if (
+                    original_exists
+                    and isinstance(bbox, list)
+                    and len(bbox) == 4
+                    and all(isinstance(value, int | float) for value in bbox)
+                ):
+                    preview_src = media_url_for_paths(
+                        f"/media/face-preview/{image_id}/{face_index}",
+                        original_path,
+                    )
                 faces_context.append(
                     {
                         "summary": face_summary(face),
                         "confidence": face.get("confidence"),
-                        "bbox": face.get("bbox", []),
+                        "bbox": bbox,
+                        "preview_src": preview_src,
                     }
                 )
 
@@ -1515,6 +1595,61 @@ def create_app(report_path: Path | None = None) -> FastAPI:
                 headers={"Cache-Control": "no-store"},
             )
 
+    @app.get("/media/face-preview/{image_id}/{face_index}")
+    def face_preview_media(image_id: str, face_index: int) -> Response:
+        with store.lock:
+            entry = store.image_index().get(image_id)
+            if entry is None:
+                raise HTTPException(status_code=404, detail="Image not found.")
+
+            image_value = entry.get("image")
+            if not isinstance(image_value, str):
+                raise HTTPException(status_code=404, detail="Image path missing.")
+
+            faces = entry.get("faces", [])
+            if not isinstance(faces, list) or face_index < 0 or face_index >= len(faces):
+                return Response(
+                    content=placeholder_svg_bytes("Face preview"),
+                    media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"},
+                )
+
+            face = faces[face_index]
+            if not isinstance(face, dict):
+                return Response(
+                    content=placeholder_svg_bytes("Face preview"),
+                    media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"},
+                )
+
+            bbox = face.get("bbox")
+            image_path = Path(image_value)
+            if (
+                not isinstance(bbox, list)
+                or len(bbox) != 4
+                or not all(isinstance(value, int | float) for value in bbox)
+                or not image_path.exists()
+            ):
+                return Response(
+                    content=placeholder_svg_bytes("Face preview"),
+                    media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"},
+                )
+
+            preview_bytes = preview_image_bytes(image_path, [float(value) for value in bbox])
+            if preview_bytes is None:
+                return Response(
+                    content=placeholder_svg_bytes("Face preview"),
+                    media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"},
+                )
+
+            return Response(
+                content=preview_bytes,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store"},
+            )
+
     @app.get("/media/original/{image_id}")
     def original_media(image_id: str) -> FileResponse:
         with store.lock:
@@ -1573,6 +1708,12 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             store.re_render_images(affected_images)
 
         return RedirectResponse(url=f"/images/{image_id}", status_code=303)
+
+    @app.post("/images/{image_id}/delete")
+    def delete_image(image_id: str) -> RedirectResponse:
+        with store.lock:
+            store.delete_image(image_id)
+        return RedirectResponse(url="/", status_code=303)
 
     @app.post("/people/{person_id}")
     def update_people_person(

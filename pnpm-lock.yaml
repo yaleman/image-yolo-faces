@@ -17,6 +17,9 @@ importers:
       tailwindcss:
         specifier: ^4.2.2
         version: 4.2.2
+      typescript:
+        specifier: ^6.0.2
+        version: 6.0.2
       vite:
         specifier: ^8.0.2
         version: 8.0.2(jiti@2.6.1)
@@ -451,6 +454,11 @@ packages:
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
+  typescript@6.0.2:
+    resolution: {integrity: sha512-bGdAIrZ0wiGDo5l8c++HWtbaNCWTS4UTv7RaTH/ThVIgjkveJt83m74bBHMJkuCbslY8ixgLBVZJIOiQlQTjfQ==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
   vite@8.0.2:
     resolution: {integrity: sha512-1gFhNi+bHhRE/qKZOJXACm6tX4bA3Isy9KuKF15AgSRuRazNBOJfdDemPBU16/mpMxApDPrWvZ08DcLPEoRnuA==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -814,6 +822,8 @@ snapshots:
 
   tslib@2.8.1:
     optional: true
+
+  typescript@6.0.2: {}
 
   vite@8.0.2(jiti@2.6.1):
     dependencies:

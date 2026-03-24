@@ -33,7 +33,6 @@
 <section class="panel page-section">
   <div class="section-header">
     <h2 class="section-title">People on this image</h2>
-    <p class="section-subtitle">Update the name for a person, or merge this cluster into another person if it was misidentified.</p>
   </div>
 
   {% if person_groups %}
@@ -41,17 +40,22 @@
     {% for person in person_groups %}
     <article class="person-card">
       <div class="person-card-header">
-        <div>
+        <div class="person-card-copy">
           <h3 class="person-card-title">{{ person.name }} <span class="person-id">#{{ person.person_id }}</span></h3>
           {% if person.aliases %}
           <p class="body-text muted">Aliases: {{ person.aliases | join(', ') }}</p>
           {% endif %}
+          <div class="chip-list">
+            {% for face in person.faces %}
+            {% if face.summary %}
+            <span class="chip">{{ face.summary }}</span>
+            {% endif %}
+            {% endfor %}
+          </div>
         </div>
-        <div class="chip-list">
+        <div class="face-preview-list">
           {% for face in person.faces %}
-          {% if face.summary %}
-          <span class="chip">{{ face.summary }}</span>
-          {% endif %}
+          <img class="face-preview-thumb" src="{{ face.preview_src }}" alt="Face preview for {{ person.name }}" loading="lazy">
           {% endfor %}
         </div>
       </div>
@@ -84,5 +88,8 @@
 
 <section class="page-actions">
   <a class="button" href="/">Back to list</a>
+  <form method="post" action="/images/{{ image_id }}/delete" data-confirm="Delete this image from the dataset and filesystem?">
+    <button class="button button-danger" type="submit">Delete image</button>
+  </form>
 </section>
 {% endblock %}
