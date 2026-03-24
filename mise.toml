@@ -2,11 +2,12 @@
 biome = "latest"
 pnpm = "latest"
 
+[tasks.tsc-check]
+run = "pnpm exec tsc --noEmit --project tsconfig.json"
+[tasks.biome-check]
+run = "biome check frontend vite.config.js playwright.config.ts biome.json --fix"
 [tasks.frontend-check]
-run = [
-    "pnpm exec tsc --noEmit --project tsconfig.json",
-    "biome check frontend vite.config.js playwright.config.ts biome.json --fix",
-]
+depends = ["tsc-check", "biome-check"]
 
 [tasks.build-frontend]
 depends = ["frontend-check"]
