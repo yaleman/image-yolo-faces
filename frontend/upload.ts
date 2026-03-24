@@ -280,9 +280,11 @@ function parseUploadResponse(responseText: string): UploadResponse | null {
   }
 }
 
-function normalizeUploadResult(payload: UploadResponse): UploadResult | null {
+function normalizeUploadResults(
+  payload: UploadResponse,
+): UploadResult[] | null {
   if (Array.isArray(payload.results) && payload.results.length > 0) {
-    return payload.results[0];
+    return payload.results;
   }
 
   if (
@@ -292,7 +294,7 @@ function normalizeUploadResult(payload: UploadResponse): UploadResult | null {
     payload.filename ||
     payload.image_id
   ) {
-    return payload;
+    return [payload];
   }
 
   return null;
@@ -306,12 +308,12 @@ function extractErrorMessage(responseText: string): string {
   return "Upload failed.";
 }
 
-function uploadFile(
+function uploadFiles(
   action: string,
-  file: File,
+  files: File[],
   onProgress: (loaded: number, total: number) => void,
   onPhase: (phase: "uploading" | "processing") => void,
-): Promise<UploadResult> {
+): Promise<UploadResponse> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("POST", action);
@@ -346,13 +348,13 @@ function uploadFile(
         return;
       }
 
-      const result = normalizeUploadResult(payload);
-      if (!result) {
+      const results = normalizeUploadResults(payload);
+      if (!results) {
         reject(new Error("Upload failed."));
         return;
       }
 
-      resolve(result);
+      resolve({ ...payload, results });
     });
 
     request.addEventListener("error", () => {
@@ -364,7 +366,9 @@ function uploadFile(
     });
 
     const formData = new FormData();
-    formData.append("image", file, file.name);
+    for (const file of files) {
+      formData.append("image", file, file.name);
+    }
     request.send(formData);
   });
 }
@@ -397,15 +401,47 @@ function bindUploadRoot(root: HTMLElement): void {
   let dragDepth = 0;
   let uploadInProgress = false;
 
-  const setBusy = (busy: boolean): void => {
+  const setBusy = (busy: boolean, fileCount: number): void => {
     submit.disabled = busy;
-    submit.textContent = busy ? "Uploading..." : "Upload images";
+    submit.textContent = busy ? "Uploading batch..." : "Upload images";
     overlayTitle.textContent = busy
-      ? "Processing uploads..."
+      ? `Uploading ${fileCount} file${fileCount === 1 ? "" : "s"} as one batch`
       : "Drop images anywhere to import them";
     overlayBody.textContent = busy
-      ? "Uploading each image, checking its hash, and scanning for faces."
+      ? "The files are sent in one request. The server will then process each file and return a result for every item."
       : "We will check the SHA-256 hash, reuse an existing record if it already exists, or scan and add it if it is new.";
+  };
+
+  const setBatchSummary = (
+    phase: "uploading" | "processing" | "done",
+    fileCount: number,
+    percent?: number,
+  ): void => {
+    if (phase === "uploading") {
+      const progressText =
+        typeof percent === "number" ? ` ${Math.round(percent)}%` : "";
+      setStatusSummary(
+        status,
+        statusSummary,
+        `Uploading ${fileCount} file${fileCount === 1 ? "" : "s"} as one batch${progressText}.`,
+      );
+      return;
+    }
+
+    if (phase === "processing") {
+      setStatusSummary(
+        status,
+        statusSummary,
+        `Server processing ${fileCount} uploaded file${fileCount === 1 ? "" : "s"}...`,
+      );
+      return;
+    }
+
+    setStatusSummary(
+      status,
+      statusSummary,
+      `Finished processing ${fileCount} file${fileCount === 1 ? "" : "s"}.`,
+    );
   };
 
   const clearQueue = (): void => {
@@ -442,7 +478,7 @@ function bindUploadRoot(root: HTMLElement): void {
     }
 
     uploadInProgress = true;
-    setBusy(true);
+    setBusy(true, files.length);
     root.classList.add("is-uploading");
     showOverlay(root, overlay);
     clearFeedback(feedback);
@@ -451,60 +487,56 @@ function bindUploadRoot(root: HTMLElement): void {
     let importedCount = 0;
     let duplicateCount = 0;
     let errorCount = 0;
-    let redirectUrl: string | null = null;
 
     try {
-      for (const [index, file] of files.entries()) {
-        const item = items[index];
-        setStatusSummary(
-          status,
-          statusSummary,
-          `Processing ${index + 1} of ${files.length}: ${file.name}`,
-        );
+      setBatchSummary("uploading", files.length);
+      for (const item of items) {
         setItemState(item, "uploading", "Uploading...");
-        item.progress.value = 0;
+      }
 
-        try {
-          const result = await uploadFile(
-            form.action,
-            file,
-            (loaded, total) => {
-              setItemProgress(item, loaded, total);
-              if (loaded >= total) {
-                setItemState(item, "processing", "Processing image...");
-              } else {
-                const percent = Math.round((loaded / total) * 100);
-                setItemState(item, "uploading", `Uploading ${percent}%`);
-              }
-            },
-            (phase) => {
-              setItemState(
-                item,
-                phase === "uploading" ? "uploading" : "processing",
-                phase === "uploading" ? "Uploading..." : "Processing image...",
-              );
-            },
-          );
-
-          finalizeItem(item, result);
-
-          if (result.status === "duplicate") {
-            duplicateCount += 1;
-          } else if (result.status === "error") {
-            errorCount += 1;
-          } else {
-            importedCount += 1;
+      const response = await uploadFiles(
+        form.action,
+        files,
+        (loaded, total) => {
+          const percent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+          setBatchSummary("uploading", files.length, percent);
+          for (const item of items) {
+            setItemProgress(item, loaded, total);
+            setItemState(item, "uploading", `Uploading ${percent}%`);
           }
-
-          if (files.length === 1 && result.detail_url) {
-            redirectUrl = result.detail_url;
+        },
+        (phase) => {
+          if (phase === "processing") {
+            setBatchSummary("processing", files.length);
           }
-        } catch (error) {
+          for (const item of items) {
+            setItemState(
+              item,
+              phase === "uploading" ? "uploading" : "processing",
+              phase === "uploading" ? "Uploading..." : "Processing images...",
+            );
+          }
+        },
+      );
+
+      const results = response.results ?? [];
+      for (const [index, item] of items.entries()) {
+        const result = results[index];
+        if (!result) {
           errorCount += 1;
-          const message =
-            error instanceof Error ? error.message : "Upload failed.";
-          setItemState(item, "error", message);
+          setItemState(item, "error", "Upload failed.");
           item.progress.value = 100;
+          continue;
+        }
+
+        finalizeItem(item, result);
+
+        if (result.status === "duplicate") {
+          duplicateCount += 1;
+        } else if (result.status === "error") {
+          errorCount += 1;
+        } else {
+          importedCount += 1;
         }
       }
 
@@ -525,20 +557,13 @@ function bindUploadRoot(root: HTMLElement): void {
         summaryParts.push("No images were processed.");
       }
 
-      setStatusSummary(
-        status,
-        statusSummary,
-        `Finished processing ${files.length} file${files.length === 1 ? "" : "s"}.`,
-      );
+      setBatchSummary("done", files.length);
 
       const kind = errorCount > 0 ? "error" : "success";
       setFeedback(feedback, kind, `${summaryParts.join(" • ")}.`);
-
-      if (redirectUrl) {
-        window.setTimeout(() => {
-          window.location.assign(redirectUrl ?? "/");
-        }, 500);
-      }
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 500);
     } catch (error) {
       console.error(error);
       if (disclosure) {
@@ -547,11 +572,9 @@ function bindUploadRoot(root: HTMLElement): void {
       setFeedback(feedback, "error", "Upload failed. Please try again.");
     } finally {
       uploadInProgress = false;
-      setBusy(false);
-      if (!redirectUrl) {
-        root.classList.remove("is-uploading");
-        hideOverlay(root, overlay);
-      }
+      setBusy(false, files.length);
+      root.classList.remove("is-uploading");
+      hideOverlay(root, overlay);
     }
   };
 

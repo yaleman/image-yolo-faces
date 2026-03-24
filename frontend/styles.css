@@ -275,6 +275,14 @@ html {
     @apply flex flex-wrap items-center gap-2.5;
   }
 
+  .sort-links {
+    @apply items-center;
+  }
+
+  .sort-links .meta {
+    @apply px-1 text-[0.8rem] uppercase tracking-[0.08em];
+  }
+
   .chip-list {
     @apply justify-end gap-2;
   }
@@ -296,6 +304,16 @@ html {
 
   .button-danger:hover {
     background: #952e27;
+  }
+
+  .sort-links .button {
+    @apply min-h-9 px-3 text-sm;
+  }
+
+  .sort-links .button.is-active,
+  .sort-links .button[aria-current="page"] {
+    background: var(--ink);
+    color: #fff;
   }
 
   .media-grid,

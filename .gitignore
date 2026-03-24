@@ -20,5 +20,6 @@ photos/
 !photos/.gitkeep
 faces.json
 .playwright-cli/
+output/playwright/
 !image_yolo_faces/static/dist/
 !image_yolo_faces/static/dist/**

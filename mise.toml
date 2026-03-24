@@ -5,7 +5,7 @@ pnpm = "latest"
 [tasks.frontend-check]
 run = [
     "pnpm exec tsc --noEmit --project tsconfig.json",
-    "biome check frontend vite.config.js biome.json --fix",
+    "biome check frontend vite.config.js playwright.config.ts biome.json --fix",
 ]
 
 [tasks.build-frontend]

@@ -15,6 +15,14 @@
     <div class="stat">{{ face_count }} faces</div>
     <div class="stat">{{ image_count }} images</div>
   </div>
+  {% if sort_links %}
+  <div class="page-actions sort-links">
+    <span class="meta">Sort</span>
+    {% for option in sort_links %}
+    <a class="button{% if option.active %} is-active{% endif %}" href="{{ option.href }}"{% if option.active %} aria-current="page"{% endif %}>{{ option.label }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
 </header>
 
 <section class="panel person-detail">

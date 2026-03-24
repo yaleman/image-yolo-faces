@@ -33,6 +33,7 @@ from .ingest import (
     DEFAULT_MODEL_REPO,
     DEFAULT_PERSON_THRESHOLD,
     IMAGE_EXTENSIONS,
+    image_added_at,
     hashes_for_file,
     load_face_encoder,
     load_model,
@@ -46,6 +47,7 @@ from .ingest import (
 DEFAULT_REPORT_PATH = Path("faces.json")
 REPORT_PATH_ENV = "IMAGE_YOLO_FACES_REPORT_PATH"
 logger = logging.getLogger(__name__)
+logger.level = logging.INFO
 
 
 def image_key(image_path: str | Path) -> str:
@@ -115,12 +117,138 @@ def media_url_for_paths(route: str, *paths: Path | None) -> str:
     return f"{route}?v={version}"
 
 
-def with_query(url: str, query: str) -> str:
+def with_query(
+    url: str,
+    query: str,
+    sort_value: str | None = None,
+    unnamed_only: bool = False,
+) -> str:
     cleaned_query = query.strip()
-    if not cleaned_query:
+    params: dict[str, str] = {}
+    if cleaned_query:
+        params["q"] = cleaned_query
+    if isinstance(sort_value, str) and sort_value.strip():
+        params["sort"] = sort_value.strip()
+    if unnamed_only:
+        params["unnamed"] = "1"
+    if not params:
         return url
     separator = "&" if "?" in url else "?"
-    return f"{url}{separator}{urlencode({'q': cleaned_query})}"
+    return f"{url}{separator}{urlencode(params)}"
+
+
+def normalized_image_sort(sort_value: str) -> str:
+    cleaned_sort = sort_value.strip().casefold()
+    return cleaned_sort if cleaned_sort in {"added", "filename"} else "added"
+
+
+def normalized_people_sort(sort_value: str) -> str:
+    cleaned_sort = sort_value.strip().casefold()
+    return cleaned_sort if cleaned_sort in {"added", "name"} else "name"
+
+
+def image_sort_key(entry: dict[str, Any], sort_value: str) -> tuple[Any, ...]:
+    image_value = str(entry.get("image", ""))
+    image_name = Path(image_value).name.casefold()
+    image_value_key = image_value.casefold()
+    if normalized_image_sort(sort_value) == "filename":
+        return (image_name, image_value_key)
+    return (-image_added_at(entry), image_name, image_value_key)
+
+
+def person_added_sort_key(
+    store: "ReportStore",
+    person: dict[str, Any] | None,
+    image_lookup: dict[str, dict[str, Any]] | None = None,
+) -> tuple[int, str, int]:
+    if person is None:
+        return (0, "", 0)
+
+    faces = person.get("faces", [])
+    if not isinstance(faces, list):
+        faces = []
+
+    if image_lookup is None:
+        image_lookup = store.image_index()
+
+    earliest_added_at: int | None = None
+    for face in faces:
+        if not isinstance(face, dict):
+            continue
+        image_value = face.get("image")
+        if not isinstance(image_value, str):
+            continue
+        entry = image_lookup.get(image_key(image_value))
+        candidate = image_added_at(entry) if entry is not None else 0
+        if earliest_added_at is None or candidate < earliest_added_at:
+            earliest_added_at = candidate
+
+    person_id = 0
+    try:
+        person_id = int(person["person_id"])
+    except (KeyError, TypeError, ValueError):
+        pass
+    display_name = person_display_name(person, person_id)
+    return (earliest_added_at or 0, display_name.casefold(), person_id)
+
+
+def sort_persons(
+    store: "ReportStore", people: list[tuple[int, dict[str, Any]]], sort_value: str
+) -> list[tuple[int, dict[str, Any]]]:
+    if normalized_people_sort(sort_value) == "added":
+        image_lookup = store.image_index()
+        return sorted(
+            people,
+            key=lambda item: person_added_sort_key(store, item[1], image_lookup),
+        )
+    return sorted(people, key=lambda item: person_sort_key(item[0], item[1]))
+
+
+def sort_image_groups(
+    store: "ReportStore", groups: list[dict[str, Any]], sort_value: str
+) -> list[dict[str, Any]]:
+    if normalized_image_sort(sort_value) == "filename":
+        return sorted(
+            groups,
+            key=lambda group: (
+                Path(group["image"]).name.casefold(),
+                str(group["image"]).casefold(),
+            ),
+        )
+
+    image_lookup = store.image_index()
+
+    def sort_key(group: dict[str, Any]) -> tuple[int, str, str]:
+        image_value = str(group["image"])
+        entry = image_lookup.get(image_key(image_value))
+        added_at = image_added_at(entry) if entry is not None else 0
+        return (
+            -added_at,
+            Path(image_value).name.casefold(),
+            image_value.casefold(),
+        )
+
+    return sorted(groups, key=sort_key)
+
+
+def build_sort_links(
+    base_url: str,
+    query: str,
+    unnamed_only: bool,
+    current_sort: str,
+    options: list[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    for value, label in options:
+        links.append(
+            {
+                "value": value,
+                "label": label,
+                "href": with_query(base_url, query, value, unnamed_only),
+                "active": current_sort == value,
+            }
+        )
+    return links
 
 
 def report_relative_path(report_path: Path, path: Path) -> str:
@@ -153,6 +281,19 @@ def frontend_assets(static_dir: Path) -> dict[str, Any]:
         if isinstance(js_file, str) and js_file
         else None,
     }
+
+
+@dataclass
+class FrontendAssetsProxy:
+    static_dir: Path
+
+    @property
+    def css(self) -> list[str]:
+        return frontend_assets(self.static_dir)["css"]
+
+    @property
+    def js(self) -> str | None:
+        return frontend_assets(self.static_dir)["js"]
 
 
 def guess_image_suffix(filename: str, content: bytes) -> tuple[str, str]:
@@ -544,7 +685,7 @@ class ReportStore:
         if not values:
             return None
 
-        resolved_paths = [str(Path(value).resolve()) for value in values]
+        resolved_paths = [str(Path(value).resolve().parent) for value in values]
         try:
             common = Path(os.path.commonpath(resolved_paths))
         except ValueError:
@@ -671,7 +812,9 @@ class ReportStore:
             names[person_id] = person_display_name(person, person_id)
         return names
 
-    def person_image_groups(self, person_id: int) -> list[dict[str, Any]]:
+    def person_image_groups(
+        self, person_id: int, sort_value: str = "added"
+    ) -> list[dict[str, Any]]:
         person = self.person_index().get(person_id)
         if person is None:
             return []
@@ -695,13 +838,7 @@ class ReportStore:
             group["faces"].append(face)
             group["face_count"] += 1
 
-        return sorted(
-            groups.values(),
-            key=lambda group: (
-                Path(group["image"]).name.lower(),
-                str(group["image"]).lower(),
-            ),
-        )
+        return sort_image_groups(self, list(groups.values()), sort_value)
 
     def re_render_images(self, image_paths: set[str]) -> None:
         if not image_paths:
@@ -823,6 +960,7 @@ class ReportStore:
                 face_encoder=face_encoder,
                 image_path=image_path,
                 confidence=confidence,
+                added_at_ns=time.time_ns(),
                 annotated_path=annotated_path,
                 group_by_person=group_by_person,
                 person_threshold=person_threshold,
@@ -1141,7 +1279,12 @@ class ReportStore:
 
 
 def build_image_context(
-    store: ReportStore, entry: dict[str, Any], index: int, query: str = ""
+    store: ReportStore,
+    entry: dict[str, Any],
+    index: int,
+    query: str = "",
+    sort_query: str = "",
+    unnamed_only: bool = False,
 ) -> dict[str, Any]:
     image_value = entry.get("image", "")
     image_id = image_key(image_value)
@@ -1179,7 +1322,9 @@ def build_image_context(
         "image_value": image_value,
         "face_count": entry.get("face_count", 0),
         "summary": ", ".join(summary_parts) if summary_parts else "Unassigned",
-        "detail_url": with_query(f"/images/{image_id}", query),
+        "detail_url": with_query(
+            f"/images/{image_id}", query, sort_query, unnamed_only
+        ),
         "annotated_url": media_url(annotated_path, f"/media/annotated/{image_id}")
         if annotated_path is not None
         else placeholder_media(image_name),
@@ -1189,16 +1334,24 @@ def build_image_context(
     }
 
 
-def build_index_context(store: ReportStore, query: str = "") -> dict[str, Any]:
+def build_index_context(
+    store: ReportStore,
+    query: str = "",
+    sort_query: str = "",
+    unnamed_only: bool = False,
+) -> dict[str, Any]:
     with store.lock:
         images: list[dict[str, Any]] = []
         people: list[dict[str, Any]] = []
         face_count = 0
         person_lookup = store.person_index()
         cleaned_query = query.strip()
-        sorted_people = sorted(
-            person_lookup.items(),
-            key=lambda item: person_sort_key(item[0], item[1]),
+        image_sort = normalized_image_sort(sort_query)
+        people_sort = normalized_people_sort(sort_query)
+        sorted_people = sort_persons(store, list(person_lookup.items()), people_sort)
+        sorted_images = sorted(
+            [image for image in store.report["images"] if isinstance(image, dict)],
+            key=lambda image: image_sort_key(image, image_sort),
         )
 
         if cleaned_query:
@@ -1206,18 +1359,31 @@ def build_index_context(store: ReportStore, query: str = "") -> dict[str, Any]:
                 if person_matches_search(person_id, person, cleaned_query):
                     people.append(
                         build_person_list_context(
-                            store, person_id, person, index, cleaned_query
+                            store,
+                            person_id,
+                            person,
+                            index,
+                            cleaned_query,
+                            sort_query,
+                            unnamed_only,
                         )
                     )
 
-        for index, image in enumerate(store.report["images"]):
-            if not isinstance(image, dict):
-                continue
+        for index, image in enumerate(sorted_images):
             face_value = image.get("face_count", 0)
             if isinstance(face_value, int):
                 face_count += face_value
             if image_matches_search(store, image, query, person_lookup):
-                images.append(build_image_context(store, image, index, query))
+                images.append(
+                    build_image_context(
+                        store,
+                        image,
+                        index,
+                        query,
+                        sort_query,
+                        unnamed_only,
+                    )
+                )
 
         total_images = len(store.report["images"])
         filtered_face_count = 0
@@ -1236,9 +1402,21 @@ def build_index_context(store: ReportStore, query: str = "") -> dict[str, Any]:
             "people_count": len(store.person_index()),
             "total_image_count": total_images,
             "search_query": cleaned_query,
+            "sort_query": sort_query,
+            "sort_value": image_sort,
+            "sort_links": build_sort_links(
+                "/",
+                cleaned_query,
+                unnamed_only,
+                image_sort,
+                [("added", "Added"), ("filename", "Filename")],
+            ),
+            "unnamed_only": unnamed_only,
             "search_active": bool(cleaned_query),
             "home_url": "/",
-            "people_url": with_query("/people", cleaned_query),
+            "people_url": with_query(
+                "/people", cleaned_query, sort_query, unnamed_only
+            ),
         }
 
 
@@ -1248,8 +1426,11 @@ def build_person_list_context(
     person: dict[str, Any],
     index: int,
     query: str = "",
+    sort_query: str = "",
+    unnamed_only: bool = False,
 ) -> dict[str, Any]:
-    image_groups = store.person_image_groups(person_id)
+    image_sort = normalized_image_sort(sort_query)
+    image_groups = store.person_image_groups(person_id, image_sort)
     face_value = person.get("face_count", len(person.get("faces", [])))
     preview_src = placeholder_media(person_display_name(person, person_id))
     if image_groups:
@@ -1281,13 +1462,18 @@ def build_person_list_context(
         "image_count": len(image_groups),
         "aliases": aliases,
         "preview_src": preview_src,
-        "detail_url": with_query(f"/people/{person_id}", query),
+        "detail_url": with_query(
+            f"/people/{person_id}", query, sort_query, unnamed_only
+        ),
         "index": index,
     }
 
 
 def build_people_context(
-    store: ReportStore, query: str = "", unnamed_only: bool = False
+    store: ReportStore,
+    query: str = "",
+    sort_query: str = "",
+    unnamed_only: bool = False,
 ) -> dict[str, Any]:
     with store.lock:
         people: list[dict[str, Any]] = []
@@ -1295,11 +1481,9 @@ def build_people_context(
         face_count = 0
         unnamed_people_count = 0
         person_lookup = store.person_index()
+        people_sort = normalized_people_sort(sort_query)
         for index, (person_id, person) in enumerate(
-            sorted(
-                person_lookup.items(),
-                key=lambda item: person_sort_key(item[0], item[1]),
-            )
+            sort_persons(store, list(person_lookup.items()), people_sort)
         ):
             if not person_has_name(person):
                 unnamed_people_count += 1
@@ -1310,7 +1494,15 @@ def build_people_context(
             if isinstance(face_value, int):
                 face_count += face_value
             filtered_people.append(
-                build_person_list_context(store, person_id, person, index, query)
+                build_person_list_context(
+                    store,
+                    person_id,
+                    person,
+                    index,
+                    query,
+                    sort_query,
+                    unnamed_only,
+                )
             )
 
         people = filtered_people
@@ -1323,7 +1515,21 @@ def build_people_context(
             "total_people_count": len(person_lookup),
             "unnamed_people_count": unnamed_people_count,
             "unnamed_only": unnamed_only,
-            "people_filter_url": "/people" if unnamed_only else "/people?unnamed=1",
+            "sort_query": sort_query,
+            "sort_value": people_sort,
+            "sort_links": build_sort_links(
+                "/people",
+                query,
+                unnamed_only,
+                people_sort,
+                [("added", "Added"), ("name", "Name")],
+            ),
+            "people_filter_url": with_query(
+                "/people",
+                query,
+                sort_query,
+                not unnamed_only,
+            ),
             "people_filter_label": "Show all people"
             if unnamed_only
             else "People without names",
@@ -1331,12 +1537,16 @@ def build_people_context(
             "images_count": len(store.report["images"]),
             "search_query": query,
             "home_url": "/",
-            "people_url": with_query("/people", query),
+            "people_url": with_query("/people", query, sort_query, unnamed_only),
         }
 
 
 def build_person_context(
-    store: ReportStore, person_id: int, query: str = ""
+    store: ReportStore,
+    person_id: int,
+    query: str = "",
+    sort_query: str = "",
+    unnamed_only: bool = False,
 ) -> dict[str, Any]:
     with store.lock:
         person_lookup = store.person_index()
@@ -1356,7 +1566,8 @@ def build_person_context(
             if isinstance(aliases_value, list)
             else []
         )
-        image_groups = store.person_image_groups(person_id)
+        image_sort = normalized_image_sort(sort_query)
+        image_groups = store.person_image_groups(person_id, image_sort)
         face_count = person.get("face_count", len(person.get("faces", [])))
         if not isinstance(face_count, int):
             face_count = len(person.get("faces", []))
@@ -1373,6 +1584,14 @@ def build_person_context(
                 {"value": str(other_id), "label": person_option_label(other_person)}
             )
 
+        sort_links = build_sort_links(
+            f"/people/{person_id}",
+            query,
+            unnamed_only,
+            image_sort,
+            [("added", "Added"), ("filename", "Filename")],
+        )
+
         image_groups_context: list[dict[str, Any]] = []
         for group in image_groups:
             preview_path = resolve_media_path(store.report_path, group["image"])
@@ -1387,7 +1606,12 @@ def build_person_context(
                         store.report_path,
                         preview_path,
                     ),
-                    "detail_url": with_query(f"/images/{group['image_id']}", query),
+                    "detail_url": with_query(
+                        f"/images/{group['image_id']}",
+                        query,
+                        sort_query,
+                        unnamed_only,
+                    ),
                     "checkbox_value": group["image"],
                 }
             )
@@ -1405,13 +1629,20 @@ def build_person_context(
             "name": name,
             "name_input": name_input,
             "search_query": query,
-            "home_url": "/",
-            "people_url": with_query("/people", query),
+            "sort_query": sort_query,
+            "sort_value": image_sort,
+            "sort_links": sort_links,
+            "home_url": with_query("/", query, sort_query, unnamed_only),
+            "people_url": with_query("/people", query, sort_query, unnamed_only),
         }
 
 
 def build_image_detail_context(
-    store: ReportStore, image_id: str, query: str = ""
+    store: ReportStore,
+    image_id: str,
+    query: str = "",
+    sort_query: str = "",
+    unnamed_only: bool = False,
 ) -> dict[str, Any]:
     with store.lock:
         image_lookup = store.image_index()
@@ -1533,8 +1764,10 @@ def build_image_detail_context(
             "person_groups": person_groups_context,
             "image_id": image_id,
             "search_query": query,
-            "home_url": "/",
-            "people_url": with_query("/people", query),
+            "sort_query": sort_query,
+            "sort_value": normalized_image_sort(sort_query),
+            "home_url": with_query("/", query, sort_query, unnamed_only),
+            "people_url": with_query("/people", query, sort_query, unnamed_only),
         }
 
 
@@ -1548,7 +1781,8 @@ def create_app(report_path: Path | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
     static_dir = Path(__file__).with_name("static")
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
-    templates.env.globals["frontend_assets"] = cast(Any, frontend_assets(static_dir))
+    frontend_assets_globals: Any = templates.env.globals
+    frontend_assets_globals["frontend_assets"] = FrontendAssetsProxy(static_dir)  # type: ignore[invalid-assignment]
     app.state.store = store
 
     def update_person_profile(
@@ -1577,25 +1811,39 @@ def create_app(report_path: Path | None = None) -> FastAPI:
         return target_id, affected_images
 
     @app.get("/", response_class=HTMLResponse)
-    def index(request: Request, q: str = "") -> HTMLResponse:
-        context = build_index_context(store, q)
+    def index(
+        request: Request, q: str = "", sort: str = "", unnamed: bool = False
+    ) -> HTMLResponse:
+        context = build_index_context(store, q, sort, unnamed)
         return templates.TemplateResponse(request, "index.html", context)
 
     @app.get("/people", response_class=HTMLResponse)
     def people_index(
-        request: Request, q: str = "", unnamed: bool = False
+        request: Request, q: str = "", sort: str = "", unnamed: bool = False
     ) -> HTMLResponse:
-        context = build_people_context(store, q, unnamed)
+        context = build_people_context(store, q, sort, unnamed)
         return templates.TemplateResponse(request, "people.html", context)
 
     @app.get("/people/{person_id}", response_class=HTMLResponse)
-    def person_detail(request: Request, person_id: int, q: str = "") -> HTMLResponse:
-        context = build_person_context(store, person_id, q)
+    def person_detail(
+        request: Request,
+        person_id: int,
+        q: str = "",
+        sort: str = "",
+        unnamed: bool = False,
+    ) -> HTMLResponse:
+        context = build_person_context(store, person_id, q, sort, unnamed)
         return templates.TemplateResponse(request, "person.html", context)
 
     @app.get("/images/{image_id}", response_class=HTMLResponse)
-    def image_detail(request: Request, image_id: str, q: str = "") -> HTMLResponse:
-        context = build_image_detail_context(store, image_id, q)
+    def image_detail(
+        request: Request,
+        image_id: str,
+        q: str = "",
+        sort: str = "",
+        unnamed: bool = False,
+    ) -> HTMLResponse:
+        context = build_image_detail_context(store, image_id, q, sort, unnamed)
         return templates.TemplateResponse(request, "image.html", context)
 
     @app.get("/media/person-preview/{image_id}/{person_id}")
@@ -1749,7 +1997,7 @@ def create_app(report_path: Path | None = None) -> FastAPI:
     async def upload_image(image: list[UploadFile] = File(...)) -> JSONResponse:
         uploads = image or []
         results: list[dict[str, str]] = []
-
+        logger.warning("Received %d uploaded files.", len(uploads))
         for upload in uploads:
             filename = upload.filename or "upload"
             content = await upload.read()

@@ -19,6 +19,7 @@ This repository uses a single JSON report as the source of truth for both the CL
 - Use `pnpm` instead of `npm`.
 - Avoid OpenSSL at all costs.
 - Run `mise check` and have it pass before considering any task complete.
+- Run `pnpm test:e2e` for frontend upload and collection-view changes before considering any UI task complete.
 - Update this `AGENTS.md` file any time the system design, workflow, or required verification steps change.
 
 ## System Design
@@ -26,14 +27,17 @@ This repository uses a single JSON report as the source of truth for both the CL
 - `faces.json` is the single source of truth for images, faces, people, and report-level configuration.
 - The CLI and web UI both read and write the same report; edits must round-trip through that JSON file rather than a second datastore.
 - Shared ingestion and scan logic lives in package modules, not in the CLI or web entrypoints.
-- Image entries include a `hashes` dictionary. `hashes.sha256` is used for exact duplicate detection, and the schema is kept as a dict for future hash types.
+- Image entries include an `added_at` Unix timestamp in nanoseconds plus a `hashes` dictionary. `hashes.sha256` is used for exact duplicate detection, and the schema is kept as a dict for future hash types.
 - Uploaded images are imported into the dataset, renamed on filename collision with a Unix-seconds suffix, scanned for faces immediately, and written back into the report with annotated output.
 - The `/uploads` handler accepts one or more `image` parts, processes them in order, and returns per-file results so the UI can show itemized upload progress.
 - The web UI shows a per-image upload queue with live progress and final status for each file instead of a single opaque submission result.
+- Collection views share a `sort` query param. Image lists support `added` and `filename`; people lists support `added` and `name`; person detail pages sort their image cards by `added` or `filename`.
+- Preserve `q`, `sort`, and `unnamed` when building collection links and search form submissions so view state round-trips cleanly.
 - Annotated images and face previews are derived media, not primary state.
 - The web UI serves server-rendered Jinja templates and loads built frontend assets from `image_yolo_faces/static/dist`.
 - Frontend source lives under `frontend/` and is built with Vite, Tailwind, and TypeScript. Built assets are committed so the packaged app can run without a runtime frontend build.
 - Biome is the formatter/linter for frontend files, and TypeScript checks run through the repo `tsconfig.json`.
+- Playwright e2e tests live under `frontend/tests/` and exercise the real browser against a lightweight test server that stubs face scanning for deterministic UI coverage.
 
 ## Python Rules
 

@@ -55,6 +55,13 @@ def normalize_image_entry(entry: dict[str, Any]) -> None:
     entry["hashes"] = normalized_hashes
 
 
+def image_added_at(entry: dict[str, Any]) -> int:
+    added_at = entry.get("added_at")
+    if isinstance(added_at, int) and added_at >= 0:
+        return added_at
+    return 0
+
+
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
@@ -381,6 +388,7 @@ def scan_image_entry(
     face_encoder,
     image_path: Path,
     confidence: float,
+    added_at_ns: int,
     annotated_path: Path | None,
     group_by_person: bool,
     person_threshold: float,
@@ -418,6 +426,7 @@ def scan_image_entry(
             "image": normalize_image_key(image_path),
             "face_count": len(faces),
             "faces": faces,
+            "added_at": added_at_ns,
             "annotated_image": str(annotated_path)
             if annotated_path is not None
             else None,

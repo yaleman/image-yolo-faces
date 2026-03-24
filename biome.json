@@ -4,6 +4,7 @@
     "includes": [
       "frontend/**",
       "vite.config.js",
+      "playwright.config.ts",
       "biome.json",
       "!image_yolo_faces/static/dist",
       "!node_modules"

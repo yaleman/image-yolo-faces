@@ -11,6 +11,12 @@
   <body>
     <header class="site-bar">
       <form class="search-bar search-bar-global" method="get" action="/">
+        {% if sort_query %}
+        <input type="hidden" name="sort" value="{{ sort_query }}">
+        {% endif %}
+        {% if unnamed_only %}
+        <input type="hidden" name="unnamed" value="1">
+        {% endif %}
         <label class="search-field">
           <input type="search" name="q" value="{{ search_query }}" placeholder="Search" autocomplete="off">
         </label>

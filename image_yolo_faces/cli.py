@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Iterator, Sequence, Tuple
 
@@ -222,6 +223,7 @@ def build_report(
             face_encoder=face_encoder,
             image_path=image_path,
             confidence=confidence,
+            added_at_ns=time.time_ns(),
             annotated_path=annotated_path,
             group_by_person=group_by_person,
             person_threshold=person_threshold,
