@@ -28,6 +28,8 @@ This repository uses a single JSON report as the source of truth for both the CL
 - Shared ingestion and scan logic lives in package modules, not in the CLI or web entrypoints.
 - Image entries include a `hashes` dictionary. `hashes.sha256` is used for exact duplicate detection, and the schema is kept as a dict for future hash types.
 - Uploaded images are imported into the dataset, renamed on filename collision with a Unix-seconds suffix, scanned for faces immediately, and written back into the report with annotated output.
+- The `/uploads` handler accepts one or more `image` parts, processes them in order, and returns per-file results so the UI can show itemized upload progress.
+- The web UI shows a per-image upload queue with live progress and final status for each file instead of a single opaque submission result.
 - Annotated images and face previews are derived media, not primary state.
 - The web UI serves server-rendered Jinja templates and loads built frontend assets from `image_yolo_faces/static/dist`.
 - Frontend source lives under `frontend/` and is built with Vite, Tailwind, and TypeScript. Built assets are committed so the packaged app can run without a runtime frontend build.

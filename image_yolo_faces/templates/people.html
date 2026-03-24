@@ -12,9 +12,12 @@
     <h1 class="page-title">People</h1>
   </div>
   <div class="stats">
-    <div class="stat">{{ people|length }} people</div>
+    <div class="stat">{{ people_count }} {% if unnamed_only %}people without names{% else %}people{% endif %}</div>
     <div class="stat">{{ face_count }} faces</div>
     <div class="stat">{{ images_count }} images</div>
+  </div>
+  <div class="page-actions">
+    <a class="button" href="{{ people_filter_url }}">{{ people_filter_label }}</a>
   </div>
 </header>
 
@@ -36,6 +39,12 @@
   {% endfor %}
 </section>
 {% else %}
-<div class="panel empty-state">No people were found in the report.</div>
+<div class="panel empty-state">
+  {% if unnamed_only %}
+  No people without names were found in the report.
+  {% else %}
+  No people were found in the report.
+  {% endif %}
+</div>
 {% endif %}
 {% endblock %}

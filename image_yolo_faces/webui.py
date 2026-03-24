@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import os
 import threading
 import time
@@ -44,6 +45,7 @@ from .ingest import (
 
 DEFAULT_REPORT_PATH = Path("faces.json")
 REPORT_PATH_ENV = "IMAGE_YOLO_FACES_REPORT_PATH"
+logger = logging.getLogger(__name__)
 
 
 def image_key(image_path: str | Path) -> str:
@@ -383,6 +385,14 @@ def person_display_name(
             return "Unknown person"
 
     return f"Person {fallback_id}"
+
+
+def person_has_name(person: dict[str, Any] | None) -> bool:
+    if person is None:
+        return False
+
+    name = person.get("name")
+    return isinstance(name, str) and bool(name.strip())
 
 
 def person_option_label(person: dict[str, Any]) -> str:
@@ -775,6 +785,13 @@ class ReportStore:
                     status_code=500, detail="Existing image is invalid."
                 )
             existing_id = image_key(existing_image)
+            logger.warning(
+                "upload skipped filename=%r status=duplicate image_id=%s sha256=%s existing_image=%s",
+                filename,
+                existing_id,
+                digest,
+                existing_image,
+            )
             return {
                 "status": "duplicate",
                 "image_id": existing_id,
@@ -783,7 +800,9 @@ class ReportStore:
 
         destination_dir = self.inferred_images_dir()
         destination_dir.mkdir(parents=True, exist_ok=True)
+        original_image_path = destination_dir / f"{stem}{suffix}"
         image_path = uniquify_filename(destination_dir, stem, suffix)
+        renamed = image_path.name != original_image_path.name
         image_path.write_bytes(content)
 
         annotated_dir = self.inferred_annotated_dir()
@@ -821,6 +840,27 @@ class ReportStore:
 
             self.save()
             image_id = image_key(entry["image"])
+            face_count = int(entry.get("face_count", 0))
+            person_ids: set[int] = set()
+            for face in entry.get("faces", []):
+                if not isinstance(face, dict):
+                    continue
+                try:
+                    person_ids.add(int(face["person_id"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+            logger.warning(
+                "upload imported filename=%r status=imported image_id=%s sha256=%s stored_image=%s renamed=%s faces=%d people=%d annotated_image=%s",
+                filename,
+                image_id,
+                digest,
+                str(image_path),
+                renamed,
+                face_count,
+                len(person_ids),
+                str(annotated_path),
+            )
             return {
                 "status": "imported",
                 "image_id": image_id,
@@ -831,6 +871,12 @@ class ReportStore:
                 image_path.unlink()
             if annotated_path.exists():
                 annotated_path.unlink()
+            logger.exception(
+                "upload failed filename=%r status=error stored_image=%s renamed=%s",
+                filename,
+                str(image_path),
+                renamed,
+            )
             raise
 
     def delete_image(self, image_id: str) -> None:
@@ -1240,10 +1286,14 @@ def build_person_list_context(
     }
 
 
-def build_people_context(store: ReportStore, query: str = "") -> dict[str, Any]:
+def build_people_context(
+    store: ReportStore, query: str = "", unnamed_only: bool = False
+) -> dict[str, Any]:
     with store.lock:
         people: list[dict[str, Any]] = []
+        filtered_people: list[dict[str, Any]] = []
         face_count = 0
+        unnamed_people_count = 0
         person_lookup = store.person_index()
         for index, (person_id, person) in enumerate(
             sorted(
@@ -1251,17 +1301,32 @@ def build_people_context(store: ReportStore, query: str = "") -> dict[str, Any]:
                 key=lambda item: person_sort_key(item[0], item[1]),
             )
         ):
+            if not person_has_name(person):
+                unnamed_people_count += 1
+            if unnamed_only and person_has_name(person):
+                continue
+
             face_value = person.get("face_count", len(person.get("faces", [])))
             if isinstance(face_value, int):
                 face_count += face_value
-            people.append(
+            filtered_people.append(
                 build_person_list_context(store, person_id, person, index, query)
             )
+
+        people = filtered_people
 
         return {
             "title": f"People - {store.report_path.name}",
             "subtitle": "Open a person to inspect the images associated with them, then rename, merge, or split selections into a new person.",
             "people": people,
+            "people_count": len(people),
+            "total_people_count": len(person_lookup),
+            "unnamed_people_count": unnamed_people_count,
+            "unnamed_only": unnamed_only,
+            "people_filter_url": "/people" if unnamed_only else "/people?unnamed=1",
+            "people_filter_label": "Show all people"
+            if unnamed_only
+            else "People without names",
             "face_count": face_count,
             "images_count": len(store.report["images"]),
             "search_query": query,
@@ -1517,8 +1582,10 @@ def create_app(report_path: Path | None = None) -> FastAPI:
         return templates.TemplateResponse(request, "index.html", context)
 
     @app.get("/people", response_class=HTMLResponse)
-    def people_index(request: Request, q: str = "") -> HTMLResponse:
-        context = build_people_context(store, q)
+    def people_index(
+        request: Request, q: str = "", unnamed: bool = False
+    ) -> HTMLResponse:
+        context = build_people_context(store, q, unnamed)
         return templates.TemplateResponse(request, "people.html", context)
 
     @app.get("/people/{person_id}", response_class=HTMLResponse)
@@ -1679,12 +1746,36 @@ def create_app(report_path: Path | None = None) -> FastAPI:
             return FileResponse(path, headers={"Cache-Control": "no-store"})
 
     @app.post("/uploads")
-    async def upload_image(image: UploadFile = File(...)) -> JSONResponse:
-        filename = image.filename or "upload"
-        content = await image.read()
-        with store.lock:
-            result = store.import_uploaded_image(filename, content)
-        return JSONResponse(result)
+    async def upload_image(image: list[UploadFile] = File(...)) -> JSONResponse:
+        uploads = image or []
+        results: list[dict[str, str]] = []
+
+        for upload in uploads:
+            filename = upload.filename or "upload"
+            content = await upload.read()
+            with store.lock:
+                try:
+                    result = store.import_uploaded_image(filename, content)
+                    result["filename"] = filename
+                    results.append(result)
+                except HTTPException as exc:
+                    results.append(
+                        {
+                            "status": "error",
+                            "filename": filename,
+                            "detail": str(exc.detail),
+                        }
+                    )
+                except Exception:
+                    results.append(
+                        {
+                            "status": "error",
+                            "filename": filename,
+                            "detail": "Upload failed.",
+                        }
+                    )
+
+        return JSONResponse({"results": results})
 
     @app.post("/images/{image_id}/people/{person_id}")
     def update_image_person(
