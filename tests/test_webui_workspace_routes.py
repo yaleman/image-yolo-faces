@@ -184,14 +184,15 @@ def test_workspace_create_route_creates_directories_and_sets_cookie(tmp_path) ->
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert "faces_workspace=research_2026" in response.headers["set-cookie"]
+    assert "faces_workspace=research_2026" not in response.headers.get(
+        "set-cookie", ""
+    )
     assert (workspaces_root / "research_2026" / "photos").is_dir()
     assert (workspaces_root / "research_2026" / "annotated").is_dir()
-    client.cookies.set("faces_workspace", "research_2026", path="/")
 
     response = client.get("/")
     assert response.status_code == 200
-    assert 'class="workspace-chip-value">research_2026<' in response.text
+    assert 'class="workspace-chip-value">default<' in response.text
 
 
 def test_person_transfer_copy_only_keeps_source_workspace_intact(tmp_path) -> None:

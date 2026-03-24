@@ -25,12 +25,11 @@ test("workspace picker can switch and create workspaces", async ({ page }) => {
       )
       .fill("research_2026");
     await page.getByRole("button", { name: "Create" }).click();
-    await expect(page.locator(".workspace-chip-value")).toHaveText(
-      "research_2026",
-    );
-    await expect(page.locator("summary.workspace-chip")).toContainText(
-      "research_2026",
-    );
+    await expect(page.locator(".workspace-chip-value")).toHaveText("archive");
+    await page.locator("summary.workspace-chip").click();
+    await expect(
+      page.getByRole("button", { name: "research_2026" }),
+    ).toBeVisible();
   } finally {
     await server.stop();
   }

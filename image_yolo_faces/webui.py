@@ -2515,9 +2515,7 @@ def create_app(workspaces_root: Path | None = None) -> FastAPI:
     ) -> RedirectResponse:
         cleaned_workspace = validate_workspace_name(workspace)
         manager.ensure_workspace(cleaned_workspace)
-        response = RedirectResponse(url="/", status_code=303)
-        set_workspace_cookie(response, cleaned_workspace)
-        return response
+        return RedirectResponse(url="/", status_code=303)
 
     @app.post("/people/{person_id}/transfer")
     def transfer_person(
