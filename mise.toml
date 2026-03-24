@@ -1,0 +1,14 @@
+[tools]
+biome = "latest"
+pnpm = "latest"
+
+[tasks.js-check]
+run = ["biome check frontend vite.config.js biome.json --fix"]
+
+[tasks.build-frontend]
+depends = ["js-check"]
+run = ["pnpm build"]
+
+[tasks.start]
+depends = ["build-frontend"]
+run = ["uv run image-yolo-faces-web --reload"]

@@ -32,7 +32,7 @@ build-backend = "setuptools.build_meta"
 include = ["image_yolo_faces*"]
 
 [tool.setuptools.package-data]
-image_yolo_faces = ["templates/*.html", "static/*.css"]
+image_yolo_faces = ["templates/*.html", "static/*", "static/**/*"]
 
 [tool.uv]
 package = true

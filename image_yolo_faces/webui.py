@@ -4,22 +4,43 @@ import html
 import json
 import os
 import threading
+import time
 from io import BytesIO
 from dataclasses import dataclass, field
 from hashlib import sha1
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 from urllib.parse import urlencode
 
 import click
 import uvicorn
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .cli import render_faces, weighted_centroid
+from .ingest import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_MODEL_FILE,
+    DEFAULT_MODEL_REPO,
+    DEFAULT_PERSON_THRESHOLD,
+    IMAGE_EXTENSIONS,
+    hashes_for_file,
+    load_face_encoder,
+    load_model,
+    normalize_image_entry,
+    render_faces,
+    scan_image_entry,
+    sha256_bytes,
+    weighted_centroid,
+)
 
 DEFAULT_REPORT_PATH = Path("faces.json")
 REPORT_PATH_ENV = "IMAGE_YOLO_FACES_REPORT_PATH"
@@ -98,6 +119,91 @@ def with_query(url: str, query: str) -> str:
         return url
     separator = "&" if "?" in url else "?"
     return f"{url}{separator}{urlencode({'q': cleaned_query})}"
+
+
+def report_relative_path(report_path: Path, path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(report_path.parent))
+    except ValueError:
+        return str(path.resolve())
+
+
+def frontend_assets(static_dir: Path) -> dict[str, Any]:
+    manifest_path = static_dir / "dist" / "manifest.json"
+    if not manifest_path.exists():
+        return {"css": [], "js": None}
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entry = manifest.get("frontend/main.ts")
+    if not isinstance(entry, dict):
+        return {"css": [], "js": None}
+
+    css_values = entry.get("css", [])
+    css_files = [
+        f"/static/dist/{css_file}"
+        for css_file in css_values
+        if isinstance(css_file, str) and css_file
+    ]
+    js_file = entry.get("file")
+    return {
+        "css": css_files,
+        "js": f"/static/dist/{js_file}"
+        if isinstance(js_file, str) and js_file
+        else None,
+    }
+
+
+def guess_image_suffix(filename: str, content: bytes) -> tuple[str, str]:
+    from PIL import Image, UnidentifiedImageError
+
+    candidate_name = Path(filename or "upload").name
+    stem = Path(candidate_name).stem or "upload"
+    suffix = Path(candidate_name).suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        return stem, suffix
+
+    format_suffix_map = {
+        "BMP": ".bmp",
+        "GIF": ".gif",
+        "JPEG": ".jpg",
+        "PNG": ".png",
+        "TIFF": ".tiff",
+        "WEBP": ".webp",
+    }
+
+    try:
+        with Image.open(BytesIO(content)) as image_file:
+            image_format = image_file.format
+    except UnidentifiedImageError as exc:
+        raise HTTPException(
+            status_code=400, detail="Upload must be a supported image."
+        ) from exc
+    if not isinstance(image_format, str):
+        raise HTTPException(status_code=400, detail="Upload must be a supported image.")
+
+    inferred_suffix = format_suffix_map.get(image_format.upper())
+    if inferred_suffix is None:
+        raise HTTPException(status_code=400, detail="Upload must be a supported image.")
+
+    return stem, inferred_suffix
+
+
+def uniquify_filename(destination_dir: Path, stem: str, suffix: str) -> Path:
+    candidate = destination_dir / f"{stem}{suffix}"
+    if not candidate.exists():
+        return candidate
+
+    timestamp = str(int(time.time()))
+    candidate = destination_dir / f"{stem}-{timestamp}{suffix}"
+    if not candidate.exists():
+        return candidate
+
+    counter = 1
+    while True:
+        candidate = destination_dir / f"{stem}-{timestamp}-{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def face_bbox_area(bbox: list[float]) -> float:
@@ -213,6 +319,9 @@ def normalize_report(report: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(images, list):
         images = []
     report["images"] = images
+    for image in images:
+        if isinstance(image, dict):
+            normalize_image_entry(image)
 
     people = report.get("people", [])
     if not isinstance(people, list):
@@ -305,6 +414,15 @@ def person_search_text(person_id: int, person: dict[str, Any] | None) -> str:
     return " ".join(values).casefold()
 
 
+def person_matches_search(
+    person_id: int, person: dict[str, Any] | None, query: str
+) -> bool:
+    cleaned_query = query.strip().casefold()
+    if not cleaned_query:
+        return False
+    return cleaned_query in person_search_text(person_id, person)
+
+
 def image_matches_search(
     store: ReportStore,
     entry: dict[str, Any],
@@ -365,6 +483,8 @@ class ReportStore:
     report_path: Path
     report: dict[str, Any]
     lock: threading.RLock = field(default_factory=threading.RLock)
+    _model: Any | None = field(default=None, init=False, repr=False)
+    _face_encoder: Any | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def open(cls, report_path: Path) -> "ReportStore":
@@ -373,6 +493,124 @@ class ReportStore:
     def save(self) -> None:
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.write_text(json.dumps(self.report, indent=2), encoding="utf-8")
+
+    def ensure_hashes_backfilled(self) -> bool:
+        changed = False
+        for image in self.report["images"]:
+            if not isinstance(image, dict):
+                continue
+            normalize_image_entry(image)
+            hashes = image.get("hashes", {})
+            if isinstance(hashes, dict) and isinstance(hashes.get("sha256"), str):
+                continue
+
+            image_value = image.get("image")
+            if not isinstance(image_value, str):
+                continue
+
+            image_path = Path(image_value)
+            if not image_path.exists():
+                continue
+
+            image["hashes"] = hashes_for_file(image_path)
+            changed = True
+
+        if changed:
+            self.save()
+        return changed
+
+    def find_image_by_hash(self, algorithm: str, digest: str) -> dict[str, Any] | None:
+        for image in self.report["images"]:
+            if not isinstance(image, dict):
+                continue
+            hashes = image.get("hashes")
+            if not isinstance(hashes, dict):
+                continue
+            if hashes.get(algorithm) == digest:
+                return image
+        return None
+
+    def _common_parent_dir(self, values: list[str]) -> Path | None:
+        if not values:
+            return None
+
+        resolved_paths = [str(Path(value).resolve()) for value in values]
+        try:
+            common = Path(os.path.commonpath(resolved_paths))
+        except ValueError:
+            return None
+
+        if common == self.report_path.parent or str(common) == common.anchor:
+            return None
+        return common
+
+    def inferred_images_dir(self) -> Path:
+        image_values = [
+            str(image["image"])
+            for image in self.report["images"]
+            if isinstance(image, dict) and isinstance(image.get("image"), str)
+        ]
+        return self._common_parent_dir(image_values) or (
+            self.report_path.parent / "photos"
+        )
+
+    def inferred_annotated_dir(self) -> Path:
+        annotated_values: list[str] = []
+        for image in self.report["images"]:
+            if not isinstance(image, dict):
+                continue
+            annotated_value = image.get("annotated_image")
+            resolved = resolve_media_path(
+                self.report_path,
+                annotated_value if isinstance(annotated_value, str) else None,
+            )
+            if resolved is not None:
+                annotated_values.append(str(resolved))
+        return self._common_parent_dir(annotated_values) or (
+            self.report_path.parent / "annotated"
+        )
+
+    def model_config(self) -> tuple[str, str, float]:
+        model_repo = self.report.get("model_repo")
+        model_file = self.report.get("model_file")
+        confidence = self.report.get("confidence_threshold")
+        return (
+            model_repo
+            if isinstance(model_repo, str) and model_repo.strip()
+            else DEFAULT_MODEL_REPO,
+            model_file
+            if isinstance(model_file, str) and model_file.strip()
+            else DEFAULT_MODEL_FILE,
+            float(confidence) if isinstance(confidence, (int, float)) else 0.25,
+        )
+
+    def grouping_config(self) -> tuple[bool, str, float]:
+        group_by_person = self.report.get("group_by_person") is True
+        embedding_model = self.report.get("embedding_model")
+        threshold = self.report.get("person_similarity_threshold")
+        return (
+            group_by_person,
+            embedding_model
+            if isinstance(embedding_model, str) and embedding_model.strip()
+            else DEFAULT_EMBEDDING_MODEL,
+            float(threshold)
+            if isinstance(threshold, (int, float))
+            else DEFAULT_PERSON_THRESHOLD,
+        )
+
+    def get_model(self):
+        if self._model is None:
+            model_repo, model_file, _ = self.model_config()
+            self._model = load_model(model_repo, model_file)
+        return self._model
+
+    def get_face_encoder(self):
+        group_by_person, embedding_model, _ = self.grouping_config()
+        if not group_by_person:
+            return None
+        if self._face_encoder is None:
+            self._face_encoder = load_face_encoder(embedding_model)
+        return self._face_encoder
 
     def image_index(self) -> dict[str, dict[str, Any]]:
         index: dict[str, dict[str, Any]] = {}
@@ -522,6 +760,78 @@ class ReportStore:
         if annotated_path.exists():
             return annotated_path
         return None
+
+    def import_uploaded_image(self, filename: str, content: bytes) -> dict[str, str]:
+        if not content:
+            raise HTTPException(status_code=400, detail="Upload was empty.")
+
+        stem, suffix = guess_image_suffix(filename, content)
+        digest = sha256_bytes(content)
+        existing = self.find_image_by_hash("sha256", digest)
+        if existing is not None:
+            existing_image = existing.get("image")
+            if not isinstance(existing_image, str):
+                raise HTTPException(
+                    status_code=500, detail="Existing image is invalid."
+                )
+            existing_id = image_key(existing_image)
+            return {
+                "status": "duplicate",
+                "image_id": existing_id,
+                "detail_url": f"/images/{existing_id}",
+            }
+
+        destination_dir = self.inferred_images_dir()
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        image_path = uniquify_filename(destination_dir, stem, suffix)
+        image_path.write_bytes(content)
+
+        annotated_dir = self.inferred_annotated_dir()
+        annotated_dir.mkdir(parents=True, exist_ok=True)
+        annotated_path = annotated_dir / f"{image_path.stem}_faces{image_path.suffix}"
+
+        try:
+            _, _, confidence = self.model_config()
+            group_by_person, _, person_threshold = self.grouping_config()
+            face_encoder = self.get_face_encoder()
+            people = self.report["people"] if group_by_person else []
+            current_next_id = self.report.get("next_person_id")
+            if not isinstance(current_next_id, int) or current_next_id < 1:
+                current_next_id = max(self.person_index().keys(), default=0) + 1
+
+            entry, next_person_id = scan_image_entry(
+                model=self.get_model(),
+                face_encoder=face_encoder,
+                image_path=image_path,
+                confidence=confidence,
+                annotated_path=annotated_path,
+                group_by_person=group_by_person,
+                person_threshold=person_threshold,
+                people=people,
+                next_person_id=current_next_id,
+            )
+            entry["hashes"]["sha256"] = digest
+            entry["annotated_image"] = report_relative_path(
+                self.report_path, annotated_path
+            )
+            self.report["images"].append(entry)
+            if group_by_person:
+                self.report["people"] = people
+                self.report["next_person_id"] = next_person_id
+
+            self.save()
+            image_id = image_key(entry["image"])
+            return {
+                "status": "imported",
+                "image_id": image_id,
+                "detail_url": f"/images/{image_id}",
+            }
+        except Exception:
+            if image_path.exists():
+                image_path.unlink()
+            if annotated_path.exists():
+                annotated_path.unlink()
+            raise
 
     def rename_person(self, person_id: int, name: str) -> set[str]:
         person = self.person_index().get(person_id)
@@ -770,8 +1080,24 @@ def build_image_context(
 def build_index_context(store: ReportStore, query: str = "") -> dict[str, Any]:
     with store.lock:
         images: list[dict[str, Any]] = []
+        people: list[dict[str, Any]] = []
         face_count = 0
         person_lookup = store.person_index()
+        cleaned_query = query.strip()
+        sorted_people = sorted(
+            person_lookup.items(),
+            key=lambda item: person_sort_key(item[0], item[1]),
+        )
+
+        if cleaned_query:
+            for index, (person_id, person) in enumerate(sorted_people):
+                if person_matches_search(person_id, person, cleaned_query):
+                    people.append(
+                        build_person_list_context(
+                            store, person_id, person, index, cleaned_query
+                        )
+                    )
+
         for index, image in enumerate(store.report["images"]):
             if not isinstance(image, dict):
                 continue
@@ -792,16 +1118,61 @@ def build_index_context(store: ReportStore, query: str = "") -> dict[str, Any]:
             "title": f"Annotated images - {store.report_path.name}",
             "heading": "Annotated images",
             "subtitle": "Review faces, name people, and merge mismatched clusters into the correct person.",
+            "people": people,
             "images": images,
             "face_count": filtered_face_count,
             "total_face_count": face_count,
             "people_count": len(store.person_index()),
             "total_image_count": total_images,
-            "search_query": query,
-            "search_active": bool(query.strip()),
+            "search_query": cleaned_query,
+            "search_active": bool(cleaned_query),
             "home_url": "/",
-            "people_url": with_query("/people", query),
+            "people_url": with_query("/people", cleaned_query),
         }
+
+
+def build_person_list_context(
+    store: ReportStore,
+    person_id: int,
+    person: dict[str, Any],
+    index: int,
+    query: str = "",
+) -> dict[str, Any]:
+    image_groups = store.person_image_groups(person_id)
+    face_value = person.get("face_count", len(person.get("faces", [])))
+    preview_src = placeholder_media(person_display_name(person, person_id))
+    if image_groups:
+        first_group = image_groups[0]
+        preview_path = resolve_media_path(store.report_path, first_group["image"])
+        preview_src = media_url_for_paths(
+            f"/media/person-preview/{first_group['image_id']}/{person_id}",
+            store.report_path,
+            preview_path,
+        )
+
+    aliases_value = person.get("aliases", [])
+    aliases = (
+        [
+            str(alias)
+            for alias in aliases_value
+            if isinstance(alias, str) and alias.strip()
+        ]
+        if isinstance(aliases_value, list)
+        else []
+    )
+
+    return {
+        "person_id": person_id,
+        "name": person_display_name(person, person_id),
+        "face_count": face_value
+        if isinstance(face_value, int)
+        else len(person.get("faces", [])),
+        "image_count": len(image_groups),
+        "aliases": aliases,
+        "preview_src": preview_src,
+        "detail_url": with_query(f"/people/{person_id}", query),
+        "index": index,
+    }
 
 
 def build_people_context(store: ReportStore, query: str = "") -> dict[str, Any]:
@@ -815,45 +1186,11 @@ def build_people_context(store: ReportStore, query: str = "") -> dict[str, Any]:
                 key=lambda item: person_sort_key(item[0], item[1]),
             )
         ):
-            image_groups = store.person_image_groups(person_id)
             face_value = person.get("face_count", len(person.get("faces", [])))
             if isinstance(face_value, int):
                 face_count += face_value
-            preview_src = placeholder_media(person_display_name(person, person_id))
-            if image_groups:
-                first_group = image_groups[0]
-                preview_path = resolve_media_path(
-                    store.report_path, first_group["image"]
-                )
-                preview_src = media_url_for_paths(
-                    f"/media/person-preview/{first_group['image_id']}/{person_id}",
-                    store.report_path,
-                    preview_path,
-                )
-
-            aliases_value = person.get("aliases", [])
-            aliases = (
-                [
-                    str(alias)
-                    for alias in aliases_value
-                    if isinstance(alias, str) and alias.strip()
-                ]
-                if isinstance(aliases_value, list)
-                else []
-            )
             people.append(
-                {
-                    "person_id": person_id,
-                    "name": person_display_name(person, person_id),
-                    "face_count": face_value
-                    if isinstance(face_value, int)
-                    else len(person.get("faces", [])),
-                    "image_count": len(image_groups),
-                    "aliases": aliases,
-                    "preview_src": preview_src,
-                    "detail_url": with_query(f"/people/{person_id}", query),
-                    "index": index,
-                }
+                build_person_list_context(store, person_id, person, index, query)
             )
 
         return {
@@ -1071,11 +1408,14 @@ def build_image_detail_context(
 def create_app(report_path: Path | None = None) -> FastAPI:
     resolved_report_path = active_report_path(report_path)
     store = ReportStore.open(resolved_report_path)
+    with store.lock:
+        store.ensure_hashes_backfilled()
 
     app = FastAPI(title="image-yolo-faces")
     templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
     static_dir = Path(__file__).with_name("static")
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    templates.env.globals["frontend_assets"] = cast(Any, frontend_assets(static_dir))
     app.state.store = store
 
     def update_person_profile(
@@ -1209,6 +1549,14 @@ def create_app(report_path: Path | None = None) -> FastAPI:
 
             return FileResponse(path, headers={"Cache-Control": "no-store"})
 
+    @app.post("/uploads")
+    async def upload_image(image: UploadFile = File(...)) -> JSONResponse:
+        filename = image.filename or "upload"
+        content = await image.read()
+        with store.lock:
+            result = store.import_uploaded_image(filename, content)
+        return JSONResponse(result)
+
     @app.post("/images/{image_id}/people/{person_id}")
     def update_image_person(
         image_id: str,
@@ -1303,11 +1651,16 @@ def create_app(report_path: Path | None = None) -> FastAPI:
     "--reload/--no-reload",
     default=False,
     show_default=True,
-    help="Restart the server when Python files change.",
+    help="Restart the server when Python files or built frontend assets change.",
 )
 def main(report_path: Path, host: str, port: int, reload: bool) -> None:
     resolved_report_path = resolve_report_path(report_path)
     os.environ[REPORT_PATH_ENV] = str(resolved_report_path)
+    package_dir = Path(__file__).resolve().parent
+    reload_dirs = [
+        str(package_dir),
+        str(package_dir / "static" / "dist"),
+    ]
     click.echo(f"Serving {resolved_report_path} at http://{host}:{port}")
     uvicorn.run(
         "image_yolo_faces.webui:create_app",
@@ -1315,4 +1668,5 @@ def main(report_path: Path, host: str, port: int, reload: bool) -> None:
         host=host,
         port=port,
         reload=reload,
+        reload_dirs=reload_dirs if reload else None,
     )

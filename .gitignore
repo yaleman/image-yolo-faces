@@ -10,6 +10,7 @@ dist/
 *.egg-info/
 **/__pycache__/*
 .venv
+node_modules/
 
 
 annotated/
@@ -19,3 +20,5 @@ photos/
 !photos/.gitkeep
 faces.json
 .playwright-cli/
+!image_yolo_faces/static/dist/
+!image_yolo_faces/static/dist/**

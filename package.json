@@ -1,0 +1,17 @@
+{
+  "packageManager": "pnpm@10.30.3",
+  "type": "module",
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.8",
+    "@tailwindcss/vite": "^4.2.2",
+    "tailwindcss": "^4.2.2",
+    "vite": "^8.0.2"
+  },
+  "name": "image-yolo-faces",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "biome check frontend vite.config.js biome.json",
+    "format": "biome format --write frontend vite.config.js biome.json"
+  }
+}

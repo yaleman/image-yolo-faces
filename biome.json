@@ -1,0 +1,30 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.8/schema.json",
+  "files": {
+    "includes": [
+      "frontend/**",
+      "vite.config.js",
+      "biome.json",
+      "!image_yolo_faces/static/dist",
+      "!node_modules"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space"
+  },
+  "linter": {
+    "enabled": true
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always"
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  }
+}

@@ -11,10 +11,109 @@
   <div class="stats">
     <div class="stat">{{ images|length }}{% if search_active %} / {{ total_image_count }}{% endif %} images</div>
     <div class="stat">{{ face_count }} faces</div>
+    {% if search_active %}
+    <div class="stat">{{ people|length }} people</div>
+    {% else %}
     <a class="stat stat-link" href="{{ people_url }}">{{ people_count }} people</a>
+    {% endif %}
   </div>
 </section>
 
+<details class="panel upload-panel upload-disclosure" data-upload-root data-upload-disclosure>
+  <summary class="upload-summary">
+    <span class="section-header">
+      <span class="section-title">Add image</span>
+    </span>
+  </summary>
+  <div class="upload-body stack">
+    <form class="upload-form stack" method="post" action="/uploads" enctype="multipart/form-data" data-upload-form>
+      <input id="upload-image-input" class="sr-only" type="file" name="image" accept="image/*" data-upload-input>
+      <div class="page-actions">
+        <label class="upload-trigger" for="upload-image-input">Choose image</label>
+        <button class="button" type="submit" data-upload-submit>Upload image</button>
+        <span class="meta" data-upload-filename>No file selected</span>
+      </div>
+    </form>
+    <div class="upload-feedback hidden" data-upload-feedback aria-live="polite"></div>
+  </div>
+  <div class="upload-overlay hidden" data-upload-overlay>
+    <div class="upload-dropzone" data-upload-dropzone>
+      <span class="upload-dropzone-copy">
+        <strong>Drop one image anywhere to import it</strong>
+        <span>We will check the SHA-256 hash, reuse an existing record if it already exists, or scan and add it if it is new.</span>
+      </span>
+    </div>
+  </div>
+</details>
+
+{% if search_active %}
+{% if people or images %}
+<div class="results-stack">
+  {% if people %}
+  <section class="result-section">
+    <div class="section-header">
+      <h2 class="section-title">People</h2>
+      <p class="section-subtitle">Matching people are shown first.</p>
+    </div>
+    <div class="results-grid">
+      {% for person in people %}
+      <article class="card card-compact">
+        <a class="card-link" href="{{ person.detail_url }}">
+          <img class="thumb" src="{{ person.preview_src }}" alt="Preview for {{ person.name }}" loading="lazy">
+        </a>
+        <div class="card-body">
+          <div class="meta">#{{ loop.index }} · {{ person.face_count }} face(s) · {{ person.image_count }} image(s)</div>
+          <h2 class="card-title">{{ person.name }}</h2>
+          <p class="summary">
+            {% if person.aliases %}
+            Aliases: {{ person.aliases | join(', ') }}
+            {% else %}
+            No aliases
+            {% endif %}
+          </p>
+          <div class="actions">
+            <a class="button" href="{{ person.detail_url }}">Open</a>
+          </div>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if images %}
+  <section class="result-section">
+    <div class="section-header">
+      <h2 class="section-title">Images</h2>
+      <p class="section-subtitle">Images that match the query or include matching people.</p>
+    </div>
+    <div class="results-grid">
+      {% for image in images %}
+      <article class="card card-compact">
+        <a class="card-link" href="{{ image.detail_url }}">
+          <img class="thumb" src="{{ image.annotated_url }}" alt="Annotated preview for {{ image.image_name }}" loading="lazy">
+        </a>
+        <div class="card-body">
+          <div class="meta">#{{ loop.index }} · {{ image.face_count }} face(s)</div>
+          <h2 class="card-title">{{ image.image_name }}</h2>
+          <p class="summary">{{ image.summary }}</p>
+          <div class="actions">
+            <a class="button" href="{{ image.detail_url }}">Review</a>
+            {% if image.annotated_exists %}
+            <a class="subtle-link" href="{{ image.annotated_media_url }}" target="_blank" rel="noreferrer">Open annotated image</a>
+            {% endif %}
+          </div>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% else %}
+<div class="panel empty-state">No people or images matched "{{ search_query }}".</div>
+{% endif %}
+{% else %}
 {% if images %}
 <section class="grid">
   {% for image in images %}
@@ -37,12 +136,7 @@
   {% endfor %}
 </section>
 {% else %}
-<div class="panel empty-state">
-  {% if search_active %}
-  No images matched "{{ search_query }}".
-  {% else %}
-  No images were found in the report.
-  {% endif %}
-</div>
+<div class="panel empty-state">No images were found in the report.</div>
+{% endif %}
 {% endif %}
 {% endblock %}
