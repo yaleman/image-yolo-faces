@@ -10,9 +10,8 @@ Each workspace contains:
 
 - `faces.json`
 - `photos/`
-- `annotated/`
 
-`faces.json` stores filenames only. The UI loads originals from `photos/` and derives annotated media from the same filename under `annotated/`.
+`faces.json` stores filenames only. The UI loads originals from `photos/` and generates annotated previews at request time from the same image.
 
 The `default` workspace is created on demand and is used when no workspace is selected.
 
@@ -68,7 +67,7 @@ Run the review UI against the workspaces root:
 uv run image-yolo-faces-web
 ```
 
-The web UI reads and writes the active workspace selected in the browser cookie. The header includes a workspace switcher and a create-workspace form. Workspace transfers on a person page can copy a person into another workspace or move the linked images/faces, with a warning when mixed images are involved.
+The web UI reads and writes the active workspace selected in the browser cookie. The header includes a workspace switcher and a create-workspace form. Workspace transfers on a person page can copy a person into another workspace or move the linked images/faces into another workspace, while leaving the source workspace intact and warning when mixed images are involved.
 
 For live code reloading while developing:
 
@@ -77,6 +76,17 @@ uv run image-yolo-faces-web --reload
 ```
 
 The web UI shows the annotated image list first. Click any image to open a review page where you can assign a name to a person, merge that cluster into an existing person, or split selected images into a new person. If an annotated preview is missing, the UI regenerates it on demand the first time it is requested.
+
+## Benchmark
+
+Measure how long it takes to render annotated previews for every image in every workspace:
+
+```bash
+uv run python scripts/benchmark_annotated.py
+```
+
+Use `--workspaces-dir` if your workspaces live somewhere other than `./workspaces`.
+The script prints per-workspace and total timings, including min, p99, and max per-image render times.
 
 The CLI downloads `model.pt` from the model repository on first use, loads it with `ultralytics.YOLO`, and parses the detections with `supervision.Detections.from_ultralytics(...)`, matching the model card example.
 

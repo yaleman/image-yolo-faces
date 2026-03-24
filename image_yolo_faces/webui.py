@@ -38,7 +38,7 @@ from .ingest import (
     load_model,
     normalize_image_entry,
     normalize_image_key,
-    render_faces,
+    render_faces_bytes,
     scan_image_entry,
     sha256_bytes,
     weighted_centroid,
@@ -51,8 +51,6 @@ from .workspaces import (
     normalize_report_media_paths,
     resolve_workspaces_root,
     validate_workspace_name,
-    workspace_annotated_dir,
-    workspace_annotated_media_path,
     workspace_photos_dir,
     workspace_original_media_path,
     workspace_report_path,
@@ -79,12 +77,6 @@ def resolve_media_path(report_path: Path, value: str | None) -> Path | None:
 
 def original_media_path(store: "ReportStore", value: str | Path) -> Path:
     return workspace_original_media_path(
-        store.workspaces_root, store.workspace_name, value
-    )
-
-
-def annotated_media_path(store: "ReportStore", value: str | Path) -> Path:
-    return workspace_annotated_media_path(
         store.workspaces_root, store.workspace_name, value
     )
 
@@ -261,9 +253,7 @@ def build_sort_links(
     return links
 
 
-def workspace_context(
-    workspaces_root: Path, current_workspace: str
-) -> dict[str, Any]:
+def workspace_context(workspaces_root: Path, current_workspace: str) -> dict[str, Any]:
     return {
         "current_workspace": current_workspace,
         "workspaces": list_workspaces(workspaces_root),
@@ -771,9 +761,6 @@ class ReportStore:
     def inferred_images_dir(self) -> Path:
         return workspace_photos_dir(self.workspaces_root, self.workspace_name)
 
-    def inferred_annotated_dir(self) -> Path:
-        return workspace_annotated_dir(self.workspaces_root, self.workspace_name)
-
     def model_config(self) -> tuple[str, str, float]:
         model_repo = self.report.get("model_repo")
         model_file = self.report.get("model_file")
@@ -894,67 +881,7 @@ class ReportStore:
         return sort_image_groups(self, list(groups.values()), sort_value)
 
     def re_render_images(self, image_paths: set[str]) -> None:
-        if not image_paths:
-            return
-
-        image_lookup = self.image_index()
-        person_labels = self.display_name_map()
-
-        for image_value in image_paths:
-            image_id = image_key(image_value, self.workspace_dir)
-            entry = image_lookup.get(image_id)
-            if entry is None:
-                continue
-
-            annotated_path = annotated_media_path(self, image_value)
-            if annotated_path is None:
-                continue
-
-            original_path = original_media_path(self, image_value)
-            if original_path is None or not original_path.exists():
-                continue
-
-            faces = entry.get("faces", [])
-            if not isinstance(faces, list):
-                faces = []
-
-            render_faces(
-                original_path,
-                faces,
-                annotated_path,
-                person_labels=person_labels,
-                force=True,
-            )
-
-    def ensure_annotated_image(self, entry: dict[str, Any]) -> Path | None:
-        image_value = entry.get("image")
-        if not isinstance(image_value, str):
-            return None
-
-        annotated_path = annotated_media_path(self, image_value)
-        if annotated_path is None:
-            return None
-        if annotated_path.exists():
-            return annotated_path
-
-        original_path = original_media_path(self, image_value)
-        if original_path is None or not original_path.exists():
-            return None
-
-        faces = entry.get("faces", [])
-        if not isinstance(faces, list):
-            faces = []
-
-        render_faces(
-            original_path,
-            faces,
-            annotated_path,
-            person_labels=self.display_name_map(),
-            force=True,
-        )
-        if annotated_path.exists():
-            return annotated_path
-        return None
+        return
 
     def import_uploaded_image(self, filename: str, content: bytes) -> dict[str, str]:
         if not content:
@@ -990,9 +917,6 @@ class ReportStore:
         renamed = image_path.name != original_image_path.name
         image_path.write_bytes(content)
 
-        annotated_path = annotated_media_path(self, image_path.name)
-        annotated_path.parent.mkdir(parents=True, exist_ok=True)
-
         try:
             _, _, confidence = self.model_config()
             group_by_person, _, person_threshold = self.grouping_config()
@@ -1008,7 +932,6 @@ class ReportStore:
                 image_path=image_path,
                 confidence=confidence,
                 added_at_ns=time.time_ns(),
-                annotated_path=annotated_path,
                 group_by_person=group_by_person,
                 person_threshold=person_threshold,
                 people=people,
@@ -1034,7 +957,7 @@ class ReportStore:
                     continue
 
             logger.warning(
-                "upload imported filename=%r status=imported image_id=%s sha256=%s stored_image=%s renamed=%s faces=%d people=%d annotated_path=%s",
+                "upload imported filename=%r status=imported image_id=%s sha256=%s stored_image=%s renamed=%s faces=%d people=%d",
                 filename,
                 image_id,
                 digest,
@@ -1042,7 +965,6 @@ class ReportStore:
                 renamed,
                 face_count,
                 len(person_ids),
-                str(annotated_path),
             )
             return {
                 "status": "imported",
@@ -1052,8 +974,6 @@ class ReportStore:
         except Exception:
             if image_path.exists():
                 image_path.unlink()
-            if annotated_path.exists():
-                annotated_path.unlink()
             logger.exception(
                 "upload failed filename=%r status=error stored_image=%s renamed=%s",
                 filename,
@@ -1073,17 +993,13 @@ class ReportStore:
             raise HTTPException(status_code=404, detail="Image path missing.")
 
         original_path = original_media_path(self, image_value)
-        annotated_path = annotated_media_path(self, image_value)
-
-        for path in [annotated_path, original_path]:
-            if path is None or not path.exists():
-                continue
+        if original_path.exists():
             try:
-                path.unlink()
+                original_path.unlink()
             except OSError as exc:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to delete file {path}.",
+                    detail=f"Failed to delete file {original_path}.",
                 ) from exc
 
         self.report["images"] = [
@@ -1431,7 +1347,9 @@ class ReportStore:
             "person_id": new_person_id,
             "face_count": 0,
             "faces": [],
-            "centroid": list(source_centroid) if isinstance(source_centroid, list) else [],
+            "centroid": list(source_centroid)
+            if isinstance(source_centroid, list)
+            else [],
             "aliases": [
                 str(alias)
                 for alias in source_aliases
@@ -1445,7 +1363,6 @@ class ReportStore:
             new_person["name"] = source_name.strip()
 
         source_lookup = self.image_index()
-        source_affected_images: set[str] = set()
         target_affected_images: set[str] = set()
 
         for image_value in source_image_paths:
@@ -1461,8 +1378,7 @@ class ReportStore:
             source_faces_for_image = [
                 face
                 for face in source_entry.get("faces", [])
-                if isinstance(face, dict)
-                and face.get("person_id") == person_id
+                if isinstance(face, dict) and face.get("person_id") == person_id
             ]
             if not source_faces_for_image:
                 continue
@@ -1522,33 +1438,6 @@ class ReportStore:
             new_person["face_count"] += len(copied_faces)
             target_affected_images.add(target_image_value)
 
-            if move_linked_images:
-                remaining_faces = [
-                    face
-                    for face in source_entry.get("faces", [])
-                    if not (isinstance(face, dict) and face.get("person_id") == person_id)
-                ]
-                if remaining_faces:
-                    source_entry["faces"] = remaining_faces
-                    source_entry["face_count"] = len(remaining_faces)
-                    source_affected_images.add(image_value)
-                else:
-                    annotated_path = annotated_media_path(self, image_value)
-                    if annotated_path is not None and annotated_path.exists():
-                        try:
-                            annotated_path.unlink()
-                        except OSError:
-                            pass
-                    if source_image_path.exists():
-                        try:
-                            source_image_path.unlink()
-                        except OSError:
-                            pass
-                    self.report["images"] = [
-                        image for image in self.report["images"] if image is not source_entry
-                    ]
-                    source_affected_images.add(image_value)
-
         if not new_person["faces"]:
             raise HTTPException(
                 status_code=400,
@@ -1558,27 +1447,7 @@ class ReportStore:
         target_people.append(new_person)
         target_store.report["next_person_id"] = new_person_id + 1
 
-        if move_linked_images:
-            source["faces"] = [
-                face
-                for face in source.get("faces", [])
-                if not (isinstance(face, dict) and face.get("person_id") == person_id)
-            ]
-            source["face_count"] = len(source["faces"])
-            if source["faces"]:
-                source_affected_images.update(
-                    {
-                        str(face["image"])
-                        for face in source["faces"]
-                        if isinstance(face.get("image"), str)
-                    }
-                )
-            else:
-                self.report["people"] = [
-                    person for person in self.report["people"] if person is not source
-                ]
-
-        return new_person_id, source_affected_images, target_affected_images
+        return new_person_id, set(), target_affected_images
 
 
 def build_image_context(
@@ -1592,6 +1461,7 @@ def build_image_context(
     image_value = entry.get("image", "")
     image_id = image_key(image_value, store.workspace_dir)
     image_name = Path(str(image_value)).name
+    original_path = original_media_path(store, image_value) if image_value else None
 
     person_ids: list[int] = []
     summary_parts: list[str] = []
@@ -1613,7 +1483,9 @@ def build_image_context(
             person_display_name(person_lookup.get(person_id), person_id)
         )
 
-    annotated_path = annotated_media_path(store, image_value)
+    annotated_source = (
+        original_path if original_path is not None and original_path.exists() else None
+    )
 
     return {
         "index": index,
@@ -1625,8 +1497,9 @@ def build_image_context(
         "detail_url": with_query(
             f"/images/{image_id}", query, sort_query, unnamed_only
         ),
-        "annotated_url": media_url(annotated_path, f"/media/annotated/{image_id}"),
-        "annotated_exists": annotated_path.exists(),
+        "annotated_url": media_url(annotated_source, f"/media/annotated/{image_id}")
+        if annotated_source is not None
+        else placeholder_media(image_name),
         "annotated_media_url": f"/media/annotated/{image_id}",
     }
 
@@ -1966,7 +1839,6 @@ def build_image_detail_context(
         original_path = original_media_path(store, image_value)
         if original_path is None:
             raise HTTPException(status_code=404, detail="Image path missing.")
-        annotated_path = annotated_media_path(store, image_value)
         image_name = Path(image_value).name
         original_exists = original_path.exists()
 
@@ -2052,10 +1924,12 @@ def build_image_detail_context(
             else placeholder_media(image_name),
             "original_available": original_exists,
             "annotated_src": media_url(
-                annotated_path,
+                original_path if original_exists else None,
                 f"/media/annotated/{image_id}",
-            ),
-            "annotated_available": annotated_path is not None and annotated_path.exists(),
+            )
+            if original_exists
+            else placeholder_media(image_name),
+            "annotated_available": original_exists,
             "person_groups": person_groups_context,
             "image_id": image_id,
             "search_query": query,
@@ -2070,7 +1944,9 @@ def build_image_detail_context(
 class WorkspaceManager:
     workspaces_root: Path
     stores: dict[str, ReportStore] = field(default_factory=dict, init=False, repr=False)
-    lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False
+    )
 
     def workspace_names(self) -> list[str]:
         return list_workspaces(self.workspaces_root)
@@ -2165,7 +2041,9 @@ def create_app(workspaces_root: Path | None = None) -> FastAPI:
         return target_id, affected_images
 
     def current_workspace_name(request: Request) -> str:
-        workspace_name = getattr(request.state, "workspace_name", DEFAULT_WORKSPACE_NAME)
+        workspace_name = getattr(
+            request.state, "workspace_name", DEFAULT_WORKSPACE_NAME
+        )
         if isinstance(workspace_name, str) and workspace_name.strip():
             return workspace_name
         return DEFAULT_WORKSPACE_NAME
@@ -2367,20 +2245,39 @@ def create_app(workspaces_root: Path | None = None) -> FastAPI:
             return FileResponse(path, headers={"Cache-Control": "no-store"})
 
     @app.get("/media/annotated/{image_id}")
-    def annotated_media(request: Request, image_id: str) -> FileResponse:
+    def annotated_media(request: Request, image_id: str) -> Response:
         store = current_store(request)
         with store.lock:
             entry = store.image_index().get(image_id)
             if entry is None:
                 raise HTTPException(status_code=404, detail="Image not found.")
 
-            path = store.ensure_annotated_image(entry)
-            if path is None or not path.exists():
-                raise HTTPException(
-                    status_code=404, detail="Annotated image file not found."
+            image_value = entry.get("image")
+            if not isinstance(image_value, str):
+                raise HTTPException(status_code=404, detail="Image path missing.")
+
+            original_path = original_media_path(store, image_value)
+            if not original_path.exists():
+                return Response(
+                    content=placeholder_svg_bytes("Annotated preview"),
+                    media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"},
                 )
 
-            return FileResponse(path, headers={"Cache-Control": "no-store"})
+            faces = entry.get("faces", [])
+            if not isinstance(faces, list):
+                faces = []
+
+            annotated_bytes = render_faces_bytes(
+                original_path,
+                faces,
+                person_labels=store.display_name_map(),
+            )
+            return Response(
+                content=annotated_bytes,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store"},
+            )
 
     @app.post("/uploads")
     async def upload_image(
@@ -2620,7 +2517,9 @@ def main(workspaces_dir: Path | None, host: str, port: int, reload: bool) -> Non
         str(package_dir),
         str(package_dir / "static" / "dist"),
     ]
-    click.echo(f"Serving workspaces in {resolved_workspaces_root} at http://{host}:{port}")
+    click.echo(
+        f"Serving workspaces in {resolved_workspaces_root} at http://{host}:{port}"
+    )
     uvicorn.run(
         "image_yolo_faces.webui:create_app",
         factory=True,

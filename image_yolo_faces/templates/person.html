@@ -71,7 +71,7 @@
   {% if transfer_preview and transfer_preview.mixed_image_count %}
   <div class="transfer-warning">
     <strong>{{ transfer_preview.mixed_image_count }} linked image(s) also contain other people.</strong>
-    <p>Choose whether to move the linked images/faces or copy the data only.</p>
+    <p>Moving will copy the linked images/faces into the target workspace and leave the source workspace intact. Use copy if you only want the person data duplicated.</p>
     <ul class="transfer-warning-list">
       {% for image in transfer_preview.images %}
       {% if image.mixed %}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import colorsys
 import hashlib
 import warnings
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence, cast
 
@@ -143,17 +144,12 @@ def detections_to_faces(detections: Detections) -> list[dict[str, Any]]:
     return faces
 
 
-def render_faces(
+def draw_faces(
     image_path: Path,
     faces: Sequence[dict[str, Any]],
-    annotated_path: Path,
     person_labels: Mapping[int, str] | None = None,
-    force: bool = False,
-) -> None:
+) -> Any:
     from PIL import Image, ImageDraw, ImageFont
-
-    if annotated_path.exists() and not force:
-        return
 
     with Image.open(image_path) as image_file:
         image = image_file.convert("RGB")
@@ -211,8 +207,18 @@ def render_faces(
         )
         drawer.text((text_left + 4, text_top + 3), label, fill=text_fill, font=font)
 
-    annotated_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(annotated_path)
+    return image
+
+
+def render_faces_bytes(
+    image_path: Path,
+    faces: Sequence[dict[str, Any]],
+    person_labels: Mapping[int, str] | None = None,
+) -> bytes:
+    image = draw_faces(image_path, faces, person_labels=person_labels)
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG")
+    return buffer.getvalue()
 
 
 def person_box_color(person_id: int) -> tuple[int, int, int]:
@@ -400,7 +406,6 @@ def scan_image_entry(
     image_path: Path,
     confidence: float,
     added_at_ns: int,
-    annotated_path: Path | None,
     group_by_person: bool,
     person_threshold: float,
     people: list[dict[str, Any]],
@@ -430,9 +435,6 @@ def scan_image_entry(
                 next_person_id,
             )
             face["person_id"] = person_id
-
-    if annotated_path is not None:
-        render_faces(image_path, faces, annotated_path)
 
     return (
         {

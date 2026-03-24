@@ -21,7 +21,8 @@
   <div class="page-actions sort-links">
     <span class="meta">Sort</span>
     {% for option in sort_links %}
-    <a class="button{% if option.active %} is-active{% endif %}" href="{{ option.href }}"{% if option.active %} aria-current="page"{% endif %}>{{ option.label }}</a>
+    <a class="button{% if option.active %} is-active{% endif %}" href="{{ option.href }}" {% if option.active %} aria-current="page" {% endif %}>{{ option.label
+      }}</a>
     {% endfor %}
   </div>
   {% endif %}
@@ -81,9 +82,6 @@
           {% if person.aliases %}
           <p class="summary">Aliases: {{ person.aliases | join(', ') }}</p>
           {% endif %}
-          <div class="actions">
-            <a class="button" href="{{ person.detail_url }}">Open</a>
-          </div>
         </div>
       </article>
       {% endfor %}
@@ -107,12 +105,6 @@
           <div class="meta">#{{ loop.index }} · {{ image.face_count }} face(s)</div>
           <h2 class="card-title">{{ image.image_name }}</h2>
           <p class="summary">{{ image.summary }}</p>
-          <div class="actions">
-            <a class="button" href="{{ image.detail_url }}">Review</a>
-            {% if image.annotated_exists %}
-            <a class="subtle-link" href="{{ image.annotated_media_url }}" target="_blank" rel="noreferrer">Open annotated image</a>
-            {% endif %}
-          </div>
         </div>
       </article>
       {% endfor %}
@@ -135,12 +127,7 @@
       <div class="meta">#{{ loop.index }} · {{ image.face_count }} face(s)</div>
       <h2 class="card-title">{{ image.image_name }}</h2>
       <p class="summary">{{ image.summary }}</p>
-      <div class="actions">
-        <a class="button" href="{{ image.detail_url }}">Review</a>
-        {% if image.annotated_exists %}
-        <a class="subtle-link" href="{{ image.annotated_media_url }}" target="_blank" rel="noreferrer">Open annotated image</a>
-        {% endif %}
-      </div>
+
     </div>
   </article>
   {% endfor %}

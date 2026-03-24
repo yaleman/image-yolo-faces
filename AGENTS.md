@@ -4,9 +4,10 @@
 
 - The scanner and web UI now operate on workspace-scoped JSON reports.
 - Workspaces live under `./workspaces` by default, or under `FACES_WORKSPACES_DIR` when that environment variable is set.
-- Each workspace contains its own `faces.json`, `photos/`, and `annotated/` directories.
+- Each workspace contains its own `faces.json` and `photos/` directory.
 - `default` is the fallback workspace and should be created on demand.
 - The browser keeps the active workspace in a cookie so the frontend and backend stay aligned.
+- Workspace transfer actions copy linked image and face data into the target workspace; they do not remove source images or source face records, and mixed-image transfers must warn that the source workspace is left intact.
 - Image and person edits must round-trip through the active workspace report.
 - Keep the schema simple and stable. Prefer extending the existing report over adding a second datastore.
 
@@ -29,12 +30,12 @@
 - Shared ingestion and scan logic lives in package modules, not in the CLI or web entrypoints.
 - Fresh web-loaded reports default to grouped uploads so people are created automatically unless the report explicitly turns grouping off.
 - Image entries include an `added_at` Unix timestamp in nanoseconds plus a `hashes` dictionary. `hashes.sha256` is used for exact duplicate detection, and the schema is kept as a dict for future hash types.
-- Uploaded images are imported into the active workspace, renamed on filename collision with a Unix-seconds suffix, scanned for faces immediately, and written back into that workspace with annotated output.
+- Uploaded images are imported into the active workspace, renamed on filename collision with a Unix-seconds suffix, scanned for faces immediately, and stored back into that workspace as source images only.
 - The `/uploads` handler accepts one or more `image` parts, processes them in order, and returns per-file results so the UI can show itemized upload progress.
 - The web UI shows a per-image upload queue with live progress and final status for each file instead of a single opaque submission result.
 - Collection views share a `sort` query param. Image lists support `added` and `filename`; people lists support `added` and `name`; person detail pages sort their image cards by `added` or `filename`.
 - Preserve `q`, `sort`, and `unnamed` when building collection links and search form submissions so view state round-trips cleanly.
-- Annotated images and face previews are derived media, not primary state.
+- Annotated images and face previews are derived media generated at request time, not primary state or stored files.
 - The web UI serves server-rendered Jinja templates and loads built frontend assets from `image_yolo_faces/static/dist`.
 - Frontend source lives under `frontend/` and is built with Vite, Tailwind, and TypeScript. Built assets are committed so the packaged app can run without a runtime frontend build.
 - Vite emits stable committed asset names under `image_yolo_faces/static/dist` so the bundle stays diff-friendly while still using the manifest for lookup.

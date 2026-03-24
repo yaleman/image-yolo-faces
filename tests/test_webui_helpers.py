@@ -14,7 +14,6 @@ from image_yolo_faces.workspaces import (
     normalize_report_media_paths,
     resolve_workspaces_root,
     validate_workspace_name,
-    workspace_annotated_dir,
     workspace_photos_dir,
     workspace_report_path,
 )
@@ -106,7 +105,6 @@ def test_ensure_workspace_layout_creates_workspace_directories(tmp_path) -> None
 
     assert workspace_dir == root / DEFAULT_WORKSPACE_NAME
     assert workspace_photos_dir(root, DEFAULT_WORKSPACE_NAME).is_dir()
-    assert workspace_annotated_dir(root, DEFAULT_WORKSPACE_NAME).is_dir()
     assert workspace_report_path(root, DEFAULT_WORKSPACE_NAME) == (
         root / DEFAULT_WORKSPACE_NAME / "faces.json"
     )

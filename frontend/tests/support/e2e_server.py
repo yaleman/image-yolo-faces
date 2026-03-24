@@ -12,7 +12,6 @@ from image_yolo_faces import webui
 from image_yolo_faces.workspaces import (
     DEFAULT_WORKSPACE_NAME,
     ensure_workspace_layout,
-    workspace_annotated_dir,
     workspace_photos_dir,
     workspace_report_path,
 )
@@ -43,7 +42,6 @@ def seed_workspace(workspace_root: Path) -> Path:
     ensure_workspace_layout(workspace_root, "archive")
 
     photos_dir = workspace_photos_dir(workspace_root, DEFAULT_WORKSPACE_NAME)
-    annotated_dir = workspace_annotated_dir(workspace_root, DEFAULT_WORKSPACE_NAME)
 
     repo_root = Path(__file__).resolve().parents[3]
     seed_fixture = repo_root / "frontend" / "tests" / "fixtures" / "zebra.png"
@@ -54,11 +52,6 @@ def seed_workspace(workspace_root: Path) -> Path:
     zebra_image = photos_dir / "zebra.png"
     shutil.copyfile(seed_fixture, zebra_image)
     make_fixture_image(apple_image, (154, 103, 44), "apple")
-
-    apple_annotated = annotated_dir / "apple.png"
-    zebra_annotated = annotated_dir / "zebra.png"
-    shutil.copyfile(apple_image, apple_annotated)
-    shutil.copyfile(zebra_image, zebra_annotated)
 
     apple_bbox = [16.0, 16.0, 72.0, 72.0]
     zebra_bbox = [18.0, 18.0, 74.0, 74.0]
@@ -149,10 +142,6 @@ def seed_workspace(workspace_root: Path) -> Path:
 
 def fake_scan_image_entry(**kwargs):
     image_path = Path(kwargs["image_path"])
-    annotated_path = kwargs["annotated_path"]
-    if annotated_path is not None:
-        annotated_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(image_path, annotated_path)
 
     return (
         {

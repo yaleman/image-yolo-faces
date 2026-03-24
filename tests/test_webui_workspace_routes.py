@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -12,7 +11,6 @@ from image_yolo_faces.webui import create_app
 from image_yolo_faces.workspaces import (
     DEFAULT_WORKSPACE_NAME,
     ensure_workspace_layout,
-    workspace_annotated_dir,
     workspace_photos_dir,
     workspace_report_path,
 )
@@ -43,17 +41,11 @@ def seed_workspace_root(workspaces_root: Path) -> None:
     ensure_workspace_layout(workspaces_root, "archive")
 
     photos_dir = workspace_photos_dir(workspaces_root, DEFAULT_WORKSPACE_NAME)
-    annotated_dir = workspace_annotated_dir(workspaces_root, DEFAULT_WORKSPACE_NAME)
 
     apple_image = photos_dir / "apple.png"
     zebra_image = photos_dir / "zebra.png"
     make_fixture_image(apple_image, (154, 103, 44), "apple")
     make_fixture_image(zebra_image, (44, 89, 154), "zebra")
-
-    apple_annotated = annotated_dir / "apple.png"
-    zebra_annotated = annotated_dir / "zebra.png"
-    shutil.copyfile(apple_image, apple_annotated)
-    shutil.copyfile(zebra_image, zebra_annotated)
 
     apple_bbox = [16.0, 16.0, 72.0, 72.0]
     zebra_bbox = [18.0, 18.0, 74.0, 74.0]
@@ -188,7 +180,6 @@ def test_workspace_create_route_creates_directories_and_sets_cookie(tmp_path) ->
         "set-cookie", ""
     )
     assert (workspaces_root / "research_2026" / "photos").is_dir()
-    assert (workspaces_root / "research_2026" / "annotated").is_dir()
 
     response = client.get("/")
     assert response.status_code == 200
@@ -220,7 +211,7 @@ def test_person_transfer_copy_only_keeps_source_workspace_intact(tmp_path) -> No
     assert target_report["people"][0]["name"] == "Zulu"
 
 
-def test_person_transfer_move_rehomes_mixed_image_faces(tmp_path) -> None:
+def test_person_transfer_move_keeps_source_workspace_intact(tmp_path) -> None:
     client, workspaces_root = make_client(tmp_path)
 
     response = client.post(
@@ -238,10 +229,8 @@ def test_person_transfer_move_rehomes_mixed_image_faces(tmp_path) -> None:
     source_report = read_report(workspaces_root, DEFAULT_WORKSPACE_NAME)
     target_report = read_report(workspaces_root, "archive")
 
-    assert len(source_report["images"]) == 1
-    assert source_report["images"][0]["image"] == "zebra.png"
-    assert len(source_report["people"]) == 1
-    assert source_report["people"][0]["person_id"] == 2
+    assert len(source_report["images"]) == 2
+    assert len(source_report["people"]) == 2
     assert len(target_report["images"]) == 2
     assert len(target_report["people"]) == 1
     assert target_report["people"][0]["person_id"] == 1

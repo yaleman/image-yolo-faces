@@ -19,7 +19,6 @@ from .ingest import (
     load_face_encoder,
     load_model,
     normalize_image_entry,
-    render_faces,
     scan_image_entry,
 )
 from .workspaces import (
@@ -29,7 +28,6 @@ from .workspaces import (
     resolve_workspaces_root,
     validate_workspace_name,
     uniquify_filename,
-    workspace_annotated_dir,
     workspace_photos_dir,
     workspace_report_path,
 )
@@ -227,42 +225,24 @@ def build_report(
         next_person_id = 1
 
     photos_dir = workspace_photos_dir(workspaces_root, workspace_name)
-    annotated_dir = workspace_annotated_dir(workspaces_root, workspace_name)
     photos_dir.mkdir(parents=True, exist_ok=True)
-    annotated_dir.mkdir(parents=True, exist_ok=True)
 
     for _, image_path in iter_images(image_roots, recursive):
         digest = hashes_for_file(image_path)["sha256"]
         cached_entry = image_hash_index.get(digest)
         if cached_entry is not None:
-            cached_image = cached_entry.get("image")
-            if isinstance(cached_image, str):
-                resolved_cached_image = photos_dir / cached_image
-                annotated_path = annotated_dir / cached_image
-                if (
-                    not annotated_path.exists()
-                    and resolved_cached_image.exists()
-                ):
-                    cached_faces = cached_entry.get("faces", [])
-                    render_faces(
-                        resolved_cached_image,
-                        cached_faces if isinstance(cached_faces, list) else [],
-                        annotated_path,
-                    )
             continue
 
         imported_image_path = uniquify_filename(
             photos_dir, image_path.stem, image_path.suffix
         )
         shutil.copy2(image_path, imported_image_path)
-        annotated_path = annotated_dir / imported_image_path.name
         entry, next_person_id = scan_image_entry(
             model=model,
             face_encoder=face_encoder,
             image_path=imported_image_path,
             confidence=confidence,
             added_at_ns=time.time_ns(),
-            annotated_path=annotated_path,
             group_by_person=group_by_person,
             person_threshold=person_threshold,
             people=people,

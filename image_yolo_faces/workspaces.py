@@ -11,8 +11,6 @@ DEFAULT_WORKSPACES_DIR = Path("workspaces")
 DEFAULT_WORKSPACE_NAME = "default"
 WORKSPACE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
-MEDIA_DIR_NAMES = ("photos", "annotated")
-
 
 def resolve_workspaces_root(workspaces_dir: Path | None = None) -> Path:
     if workspaces_dir is not None:
@@ -46,10 +44,6 @@ def workspace_photos_dir(workspaces_root: Path, workspace_name: str) -> Path:
     return workspace_dir(workspaces_root, workspace_name) / "photos"
 
 
-def workspace_annotated_dir(workspaces_root: Path, workspace_name: str) -> Path:
-    return workspace_dir(workspaces_root, workspace_name) / "annotated"
-
-
 def workspace_media_name(value: str | Path) -> str:
     return Path(value).name
 
@@ -62,21 +56,10 @@ def workspace_original_media_path(
     )
 
 
-def workspace_annotated_media_path(
-    workspaces_root: Path, workspace_name: str, value: str | Path
-) -> Path:
-    return workspace_annotated_dir(
-        workspaces_root, workspace_name
-    ) / workspace_media_name(value)
-
-
 def ensure_workspace_layout(workspaces_root: Path, workspace_name: str) -> Path:
     directory = workspace_dir(workspaces_root, workspace_name)
     directory.mkdir(parents=True, exist_ok=True)
     workspace_photos_dir(workspaces_root, workspace_name).mkdir(
-        parents=True, exist_ok=True
-    )
-    workspace_annotated_dir(workspaces_root, workspace_name).mkdir(
         parents=True, exist_ok=True
     )
     return directory
@@ -120,12 +103,7 @@ def workspace_relative_media_path(
     try:
         return str(resolved.relative_to(workspace_directory))
     except ValueError:
-        for directory_name in MEDIA_DIR_NAMES:
-            candidate = (workspace_directory / directory_name / resolved.name).resolve()
-            if candidate.exists():
-                return str(candidate.relative_to(workspace_directory))
-
-    return str(resolved)
+        return str(resolved)
 
 
 def workspace_media_key(
