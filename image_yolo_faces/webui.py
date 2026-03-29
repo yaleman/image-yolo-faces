@@ -4,6 +4,7 @@ import html
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -51,6 +52,7 @@ from .workspaces import (
     normalize_report_media_paths,
     resolve_workspaces_root,
     validate_workspace_name,
+    workspace_exports_dir,
     workspace_photos_dir,
     workspace_original_media_path,
     workspace_report_path,
@@ -59,6 +61,7 @@ from .workspaces import (
 WORKSPACE_COOKIE_NAME = "faces_workspace"
 logger = logging.getLogger(__name__)
 logger.level = logging.INFO
+INVALID_EXPORT_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 
 def image_key(image_path: str | Path, base_dir: Path | None = None) -> str:
@@ -79,6 +82,49 @@ def original_media_path(store: "ReportStore", value: str | Path) -> Path:
     return workspace_original_media_path(
         store.workspaces_root, store.workspace_name, value
     )
+
+
+def sanitize_export_component(value: str) -> str:
+    cleaned = INVALID_EXPORT_CHARS_RE.sub("_", value.strip()).strip(".")
+    return cleaned or "Export"
+
+
+def export_image_bytes(image_path: Path, bbox: list[float], suffix: str) -> bytes | None:
+    from PIL import Image, ImageOps
+
+    try:
+        with Image.open(image_path) as image_file:
+            image = ImageOps.exif_transpose(image_file).convert("RGB")
+    except OSError:
+        return None
+
+    crop_box = preview_crop_box(bbox, image.width, image.height)
+    if crop_box is None:
+        return None
+
+    preview = image.crop(crop_box)
+    preview.thumbnail((384, 384), Image.Resampling.LANCZOS)
+
+    format_map = {
+        ".bmp": "BMP",
+        ".gif": "GIF",
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".png": "PNG",
+        ".tif": "TIFF",
+        ".tiff": "TIFF",
+        ".webp": "WEBP",
+    }
+    image_format = format_map.get(suffix.casefold(), "PNG")
+
+    buffer = BytesIO()
+    save_kwargs: dict[str, Any] = {"format": image_format}
+    if image_format == "JPEG":
+        save_kwargs.update({"quality": 90, "optimize": True})
+    elif image_format == "PNG":
+        save_kwargs["optimize"] = True
+    preview.save(buffer, **save_kwargs)
+    return buffer.getvalue()
 
 
 def media_version(path: Path | None) -> str:
@@ -439,24 +485,7 @@ def preview_crop_box(
 
 
 def preview_image_bytes(image_path: Path, bbox: list[float]) -> bytes | None:
-    from PIL import Image, ImageOps
-
-    try:
-        with Image.open(image_path) as image_file:
-            image = ImageOps.exif_transpose(image_file).convert("RGB")
-    except OSError:
-        return None
-
-    crop_box = preview_crop_box(bbox, image.width, image.height)
-    if crop_box is None:
-        return None
-
-    preview = image.crop(crop_box)
-    preview.thumbnail((384, 384), Image.Resampling.LANCZOS)
-
-    buffer = BytesIO()
-    preview.save(buffer, format="JPEG", quality=90, optimize=True)
-    return buffer.getvalue()
+    return export_image_bytes(image_path, bbox, ".jpg")
 
 
 def person_preview_bbox(
@@ -845,6 +874,91 @@ class ReportStore:
                     paths.add(image_value)
             break
         return paths
+
+    def export_person_faces(self, person_id: int) -> Path:
+        person = self.person_index().get(person_id)
+        if person is None:
+            raise HTTPException(
+                status_code=404, detail=f"Person {person_id} was not found."
+            )
+
+        export_name = sanitize_export_component(person_display_name(person, person_id))
+        export_dir = workspace_exports_dir(self.workspaces_root, self.workspace_name)
+        person_export_dir = export_dir / export_name
+        shutil.rmtree(person_export_dir, ignore_errors=True)
+        person_export_dir.mkdir(parents=True, exist_ok=True)
+
+        exported_count = 0
+        image_counts: dict[str, int] = {}
+        image_hashes: dict[str, set[str]] = {}
+        image_lookup = self.image_index()
+        faces = person.get("faces", [])
+        if not isinstance(faces, list):
+            faces = []
+
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+
+            image_value = face.get("image")
+            bbox = face.get("bbox")
+            if not isinstance(image_value, str):
+                continue
+            if (
+                not isinstance(bbox, list)
+                or len(bbox) != 4
+                or not all(isinstance(value, int | float) for value in bbox)
+            ):
+                continue
+
+            image_path = original_media_path(self, image_value)
+            if not image_path.exists():
+                continue
+
+            original_name = Path(image_value).name
+            original_stem = Path(original_name).stem or "face"
+            original_suffix = Path(original_name).suffix or ".png"
+            image_entry = image_lookup.get(image_key(image_value, self.workspace_dir))
+            hashes = image_entry.get("hashes", {}) if image_entry is not None else {}
+            image_hash = (
+                hashes.get("sha256")
+                if isinstance(hashes, dict) and isinstance(hashes.get("sha256"), str)
+                else None
+            )
+            seen_hashes = image_hashes.setdefault(original_name, set())
+            if isinstance(image_hash, str) and image_hash in seen_hashes:
+                continue
+
+            count = image_counts.get(original_name, 0) + 1
+            image_counts[original_name] = count
+
+            if count == 1:
+                export_filename = f"{export_name}-{original_name}"
+            else:
+                export_filename = (
+                    f"{export_name}-{original_stem}-face-{count}{original_suffix}"
+                )
+
+            export_path = person_export_dir / export_filename
+            export_bytes = export_image_bytes(
+                image_path,
+                [float(value) for value in bbox],
+                original_suffix,
+            )
+            if export_bytes is None:
+                continue
+
+            export_path.write_bytes(export_bytes)
+            if isinstance(image_hash, str):
+                seen_hashes.add(image_hash)
+            exported_count += 1
+
+        if exported_count == 0:
+            raise HTTPException(
+                status_code=400, detail="No exportable faces were found for this person."
+            )
+
+        return person_export_dir
 
     def display_name_map(self) -> dict[int, str]:
         names: dict[int, str] = {}
@@ -1802,6 +1916,7 @@ def build_person_context(
             "sort_links": sort_links,
             "home_url": with_query("/", query, sort_query, unnamed_only),
             "people_url": with_query("/people", query, sort_query, unnamed_only),
+            "export_dir_name": sanitize_export_component(name),
         }
 
 
@@ -2393,6 +2508,23 @@ def create_app(workspaces_root: Path | None = None) -> FastAPI:
             store.re_render_images(affected_images)
 
         return RedirectResponse(url=f"/people/{new_person_id}", status_code=303)
+
+    @app.post("/people/{person_id}/export")
+    def export_person(
+        request: Request,
+        person_id: int,
+        q: str = Form(""),
+        sort: str = Form(""),
+        unnamed: str = Form(""),
+    ) -> RedirectResponse:
+        store = current_store(request)
+        with store.lock:
+            store.export_person_faces(person_id)
+
+        return RedirectResponse(
+            url=with_query(f"/people/{person_id}", q, sort, unnamed == "1"),
+            status_code=303,
+        )
 
     @app.post("/workspaces/select")
     def select_workspace(

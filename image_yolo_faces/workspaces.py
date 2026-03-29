@@ -44,6 +44,10 @@ def workspace_photos_dir(workspaces_root: Path, workspace_name: str) -> Path:
     return workspace_dir(workspaces_root, workspace_name) / "photos"
 
 
+def workspace_exports_dir(workspaces_root: Path, workspace_name: str) -> Path:
+    return workspace_dir(workspaces_root, workspace_name) / "exports"
+
+
 def workspace_media_name(value: str | Path) -> str:
     return Path(value).name
 
@@ -60,6 +64,9 @@ def ensure_workspace_layout(workspaces_root: Path, workspace_name: str) -> Path:
     directory = workspace_dir(workspaces_root, workspace_name)
     directory.mkdir(parents=True, exist_ok=True)
     workspace_photos_dir(workspaces_root, workspace_name).mkdir(
+        parents=True, exist_ok=True
+    )
+    workspace_exports_dir(workspaces_root, workspace_name).mkdir(
         parents=True, exist_ok=True
     )
     return directory

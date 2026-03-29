@@ -11,6 +11,7 @@ from image_yolo_faces.webui import create_app
 from image_yolo_faces.workspaces import (
     DEFAULT_WORKSPACE_NAME,
     ensure_workspace_layout,
+    workspace_exports_dir,
     workspace_photos_dir,
     workspace_report_path,
 )
@@ -48,6 +49,7 @@ def seed_workspace_root(workspaces_root: Path) -> None:
     make_fixture_image(zebra_image, (44, 89, 154), "zebra")
 
     apple_bbox = [16.0, 16.0, 72.0, 72.0]
+    apple_bbox_secondary = [24.0, 20.0, 80.0, 76.0]
     zebra_bbox = [18.0, 18.0, 74.0, 74.0]
 
     report = {
@@ -55,11 +57,16 @@ def seed_workspace_root(workspaces_root: Path) -> None:
         "images": [
             {
                 "image": "apple.png",
-                "face_count": 1,
+                "face_count": 2,
                 "faces": [
                     {
                         "bbox": apple_bbox,
                         "confidence": 0.97,
+                        "person_id": 1,
+                    },
+                    {
+                        "bbox": apple_bbox_secondary,
+                        "confidence": 0.91,
                         "person_id": 1,
                     }
                 ],
@@ -90,7 +97,7 @@ def seed_workspace_root(workspaces_root: Path) -> None:
             {
                 "person_id": 1,
                 "name": "Zulu",
-                "face_count": 2,
+                "face_count": 3,
                 "centroid": [1.0],
                 "aliases": [],
                 "faces": [
@@ -99,6 +106,13 @@ def seed_workspace_root(workspaces_root: Path) -> None:
                         "face_index": 0,
                         "bbox": apple_bbox,
                         "confidence": 0.97,
+                        "person_id": 1,
+                    },
+                    {
+                        "image": "apple.png",
+                        "face_index": 1,
+                        "bbox": apple_bbox_secondary,
+                        "confidence": 0.91,
                         "person_id": 1,
                     },
                     {
@@ -250,3 +264,26 @@ def test_person_transfer_warns_before_moving_mixed_images(tmp_path) -> None:
     assert "Move linked images/faces" in response.text
     assert "Copy data only" in response.text
     assert "linked image(s) also contain other people" in response.text
+
+
+def test_person_export_writes_faces_into_workspace_exports(tmp_path) -> None:
+    client, workspaces_root = make_client(tmp_path)
+
+    response = client.post(
+        "/people/1/export",
+        data={"q": "Zulu", "sort": "filename", "unnamed": "1"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/people/1?q=Zulu&sort=filename&unnamed=1"
+
+    export_dir = workspace_exports_dir(workspaces_root, DEFAULT_WORKSPACE_NAME) / "Zulu"
+    assert export_dir.is_dir()
+
+    exported_files = sorted(path.name for path in export_dir.iterdir() if path.is_file())
+    assert exported_files == [
+        "Zulu-apple.png",
+        "Zulu-zebra.png",
+    ]
+    for filename in exported_files:
+        assert (export_dir / filename).stat().st_size > 0

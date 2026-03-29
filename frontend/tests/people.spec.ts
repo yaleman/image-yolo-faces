@@ -1,3 +1,6 @@
+import { readdir } from "node:fs/promises";
+import path from "node:path";
+
 import { startE2EServer } from "./support/server";
 import { expect, test } from "./support/test";
 
@@ -33,6 +36,32 @@ test("people and person views sort by added time and name", async ({
     await expect(page.locator("label.selection-card").first()).toContainText(
       "apple.png",
     );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("person export writes cropped face files into the active workspace", async ({
+  page,
+}) => {
+  const server = await startE2EServer();
+
+  try {
+    await page.goto(`${server.baseURL}/people/1`);
+
+    await page.getByRole("button", { name: "Export all faces" }).click();
+    await expect(page).toHaveURL(/\/people\/1$/);
+
+    const exportDir = path.join(server.workspace, "default", "exports", "Zulu");
+    await expect
+      .poll(async () => {
+        try {
+          return (await readdir(exportDir)).sort();
+        } catch {
+          return [];
+        }
+      })
+      .toEqual(["Zulu-apple.png", "Zulu-zebra.png"]);
   } finally {
     await server.stop();
   }

@@ -4,10 +4,11 @@
 
 - The scanner and web UI now operate on workspace-scoped JSON reports.
 - Workspaces live under `./workspaces` by default, or under `FACES_WORKSPACES_DIR` when that environment variable is set.
-- Each workspace contains its own `faces.json` and `photos/` directory.
+- Each workspace contains its own `faces.json`, `photos/`, and `exports/` directories.
 - `default` is the fallback workspace and should be created on demand.
 - The browser keeps the active workspace in a cookie so the frontend and backend stay aligned.
 - Workspace transfer actions copy linked image and face data into the target workspace; they do not remove source images or source face records, and mixed-image transfers must warn that the source workspace is left intact.
+- Person export actions write cropped face images into the active workspace's `exports/<person name>/` directory as derived files only; they do not change `faces.json`.
 - Image and person edits must round-trip through the active workspace report.
 - Keep the schema simple and stable. Prefer extending the existing report over adding a second datastore.
 

@@ -54,6 +54,7 @@ def seed_workspace(workspace_root: Path) -> Path:
     make_fixture_image(apple_image, (154, 103, 44), "apple")
 
     apple_bbox = [16.0, 16.0, 72.0, 72.0]
+    apple_bbox_secondary = [24.0, 20.0, 80.0, 76.0]
     zebra_bbox = [18.0, 18.0, 74.0, 74.0]
 
     report = {
@@ -61,11 +62,16 @@ def seed_workspace(workspace_root: Path) -> Path:
         "images": [
             {
                 "image": "apple.png",
-                "face_count": 1,
+                "face_count": 2,
                 "faces": [
                     {
                         "bbox": apple_bbox,
                         "confidence": 0.97,
+                        "person_id": 1,
+                    },
+                    {
+                        "bbox": apple_bbox_secondary,
+                        "confidence": 0.91,
                         "person_id": 1,
                     }
                 ],
@@ -96,7 +102,7 @@ def seed_workspace(workspace_root: Path) -> Path:
             {
                 "person_id": 1,
                 "name": "Zulu",
-                "face_count": 2,
+                "face_count": 3,
                 "centroid": [1.0],
                 "aliases": [],
                 "faces": [
@@ -105,6 +111,13 @@ def seed_workspace(workspace_root: Path) -> Path:
                         "face_index": 0,
                         "bbox": apple_bbox,
                         "confidence": 0.97,
+                        "person_id": 1,
+                    },
+                    {
+                        "image": "apple.png",
+                        "face_index": 1,
+                        "bbox": apple_bbox_secondary,
+                        "confidence": 0.91,
                         "person_id": 1,
                     },
                     {

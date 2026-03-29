@@ -62,6 +62,27 @@
   </div>
 </section>
 
+<section class="panel page-section">
+  <div class="section-header">
+    <h2 class="section-title">Export faces</h2>
+    <p class="section-subtitle">Write cropped face images for this person into <code>exports/{{ export_dir_name }}/</code> inside the active workspace.</p>
+  </div>
+  <form method="post" action="/people/{{ person_id }}/export" class="stack">
+    {% if search_query %}
+    <input type="hidden" name="q" value="{{ search_query }}">
+    {% endif %}
+    {% if sort_query %}
+    <input type="hidden" name="sort" value="{{ sort_query }}">
+    {% endif %}
+    {% if unnamed_only %}
+    <input type="hidden" name="unnamed" value="1">
+    {% endif %}
+    <div class="page-actions">
+      <button class="button" type="submit">Export all faces</button>
+    </div>
+  </form>
+</section>
+
 <section class="panel page-section person-transfer">
   <div class="section-header">
     <h2 class="section-title">Workspace transfer</h2>

@@ -10,6 +10,7 @@ Each workspace contains:
 
 - `faces.json`
 - `photos/`
+- `exports/`
 
 `faces.json` stores filenames only. The UI loads originals from `photos/` and generates annotated previews at request time from the same image.
 
@@ -75,7 +76,7 @@ For live code reloading while developing:
 uv run image-yolo-faces-web --reload
 ```
 
-The web UI shows the annotated image list first. Click any image to open a review page where you can assign a name to a person, merge that cluster into an existing person, or split selected images into a new person. If an annotated preview is missing, the UI regenerates it on demand the first time it is requested.
+The web UI shows the annotated image list first. Click any image to open a review page where you can assign a name to a person, merge that cluster into an existing person, or split selected images into a new person. Person detail pages can also export cropped face images into `exports/<person name>/` within the active workspace. If an annotated preview is missing, the UI regenerates it on demand the first time it is requested.
 
 ## Benchmark
 
