@@ -2,17 +2,17 @@
   "packageManager": "pnpm@10.30.3",
   "type": "module",
   "devDependencies": {
-    "@biomejs/biome": "^2.4.8",
-    "@playwright/test": "^1.58.2",
+    "@biomejs/biome": "^2.4.10",
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.2.2",
-    "@types/node": "^25.5.0",
+    "@types/node": "^25.5.2",
     "istanbul-lib-coverage": "^3.2.2",
     "istanbul-lib-report": "^3.0.1",
     "istanbul-reports": "^3.2.0",
     "tailwindcss": "^4.2.2",
     "typescript": "^6.0.2",
     "v8-to-istanbul": "^9.3.0",
-    "vite": "^8.0.2"
+    "vite": "^8.0.7"
   },
   "name": "image-yolo-faces",
   "scripts": {
