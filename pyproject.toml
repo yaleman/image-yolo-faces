@@ -10,7 +10,7 @@ dependencies = [
     "huggingface-hub>=1.7.2",
     "insightface>=0.7.3",
     "jinja2>=3.1.6",
-    "numpy<2",
+    "numpy<3",
     "onnx<1.19",
     "onnxruntime>=1.24.3",
     "pillow>=11.3.0",
