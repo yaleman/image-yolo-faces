@@ -14,7 +14,9 @@ from .ingest import (
     DEFAULT_MODEL_REPO,
     DEFAULT_PERSON_GROUPING_STRATEGY,
     DEFAULT_PERSON_THRESHOLD,
+    FaceEncoder,
     IMAGE_EXTENSIONS,
+    ModelLike,
     hashes_for_file,
     load_face_encoder,
     load_model,
@@ -205,8 +207,8 @@ def load_existing_report(
 
 
 def build_report(
-    model: Any,
-    face_encoder,
+    model: ModelLike,
+    face_encoder: FaceEncoder | None,
     image_roots: Sequence[Path],
     recursive: bool,
     confidence: float,
@@ -217,7 +219,7 @@ def build_report(
     report: dict[str, Any],
     image_hash_index: dict[str, dict[str, Any]],
     people: list[dict[str, Any]],
-) -> dict:
+) -> dict[str, Any]:
     if group_by_person:
         report["people"] = people
         next_person_id = int(report.get("next_person_id", len(people) + 1))

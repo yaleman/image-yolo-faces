@@ -11,7 +11,7 @@ import time
 from io import BytesIO
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Awaitable, Callable, TypedDict, cast
 from urllib.parse import quote, urlencode
 
 import click
@@ -32,7 +32,9 @@ from .ingest import (
     DEFAULT_MODEL_FILE,
     DEFAULT_MODEL_REPO,
     DEFAULT_PERSON_THRESHOLD,
+    FaceEncoder,
     IMAGE_EXTENSIONS,
+    ModelLike,
     image_added_at,
     hashes_for_file,
     load_face_encoder,
@@ -62,6 +64,15 @@ WORKSPACE_COOKIE_NAME = "faces_workspace"
 logger = logging.getLogger(__name__)
 logger.level = logging.INFO
 INVALID_EXPORT_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+__all__ = [
+    "create_app",
+    "person_preview_bbox",
+    "preview_crop_box",
+    "representative_face_bbox",
+    "resolve_media_path",
+    "scan_image_entry",
+]
 
 
 def image_key(image_path: str | Path, base_dir: Path | None = None) -> str:
@@ -316,7 +327,12 @@ def set_workspace_cookie(response: Response, workspace_name: str) -> None:
     )
 
 
-def frontend_assets(static_dir: Path) -> dict[str, Any]:
+class FrontendAssets(TypedDict):
+    css: list[str]
+    js: str | None
+
+
+def frontend_assets(static_dir: Path) -> FrontendAssets:
     manifest_path = static_dir / "dist" / "manifest.json"
     if not manifest_path.exists():
         return {"css": [], "js": None}
@@ -725,8 +741,8 @@ class ReportStore:
     report_path: Path
     report: dict[str, Any]
     lock: threading.RLock = field(default_factory=threading.RLock)
-    _model: Any | None = field(default=None, init=False, repr=False)
-    _face_encoder: Any | None = field(default=None, init=False, repr=False)
+    _model: ModelLike | None = field(default=None, init=False, repr=False)
+    _face_encoder: FaceEncoder | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def open(cls, report_path: Path) -> "ReportStore":
@@ -818,13 +834,13 @@ class ReportStore:
             else DEFAULT_PERSON_THRESHOLD,
         )
 
-    def get_model(self):
+    def get_model(self) -> ModelLike:
         if self._model is None:
             model_repo, model_file, _ = self.model_config()
             self._model = load_model(model_repo, model_file)
         return self._model
 
-    def get_face_encoder(self):
+    def get_face_encoder(self) -> FaceEncoder | None:
         group_by_person, embedding_model, _ = self.grouping_config()
         if not group_by_person:
             return None
@@ -2097,12 +2113,14 @@ def create_app(workspaces_root: Path | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
     static_dir = Path(__file__).with_name("static")
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
-    frontend_assets_globals: Any = templates.env.globals
-    frontend_assets_globals["frontend_assets"] = FrontendAssetsProxy(static_dir)  # type: ignore[invalid-assignment]
+    frontend_assets_globals = cast(dict[str, Any], templates.env.globals)
+    frontend_assets_globals["frontend_assets"] = FrontendAssetsProxy(static_dir)
     app.state.workspace_manager = manager
 
     @app.middleware("http")
-    async def workspace_context_middleware(request: Request, call_next):
+    async def workspace_context_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         requested_workspace = request.cookies.get(WORKSPACE_COOKIE_NAME)
         workspace_name = DEFAULT_WORKSPACE_NAME
         set_cookie = False

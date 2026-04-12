@@ -5,10 +5,12 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageDraw
 
-from image_yolo_faces import webui
+import image_yolo_faces.webui as webui
+from image_yolo_faces.ingest import FaceEncoder, ModelLike
 from image_yolo_faces.workspaces import (
     DEFAULT_WORKSPACE_NAME,
     ensure_workspace_layout,
@@ -153,18 +155,37 @@ def seed_workspace(workspace_root: Path) -> Path:
     return report_path
 
 
-def fake_scan_image_entry(**kwargs):
-    image_path = Path(kwargs["image_path"])
+def fake_scan_image_entry(
+    model: ModelLike,
+    face_encoder: FaceEncoder | None,
+    image_path: Path,
+    confidence: float,
+    added_at_ns: int,
+    group_by_person: bool,
+    person_threshold: float,
+    people: list[dict[str, Any]],
+    next_person_id: int,
+    storage_root: Path | None = None,
+) -> tuple[dict[str, Any], int]:
+    del (
+        model,
+        face_encoder,
+        confidence,
+        group_by_person,
+        person_threshold,
+        people,
+        storage_root,
+    )
 
     return (
         {
             "image": image_path.name,
             "face_count": 0,
             "faces": [],
-            "added_at": int(kwargs["added_at_ns"]),
+            "added_at": added_at_ns,
             "hashes": {},
         },
-        int(kwargs["next_person_id"]),
+        next_person_id,
     )
 
 
@@ -179,7 +200,7 @@ def main() -> None:
     workspaces_root.mkdir(parents=True, exist_ok=True)
     seed_workspace(workspaces_root)
 
-    webui.scan_image_entry = fake_scan_image_entry  # type: ignore[assignment]
+    setattr(webui, "scan_image_entry", fake_scan_image_entry)
     app = webui.create_app(workspaces_root)
 
     import uvicorn

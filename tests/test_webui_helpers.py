@@ -1,6 +1,9 @@
-import pytest
+from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from image_yolo_faces.webui import (
     person_preview_bbox,
@@ -54,7 +57,7 @@ def test_preview_crop_box_keeps_the_crop_inside_image_bounds() -> None:
 
 def test_person_preview_bbox_uses_person_annotations_for_the_image() -> None:
     image_path = "/tmp/report/photos/Image 16.jpeg"
-    entry = {
+    entry: dict[str, Any] = {
         "image": image_path,
         "faces": [
             {
@@ -64,7 +67,7 @@ def test_person_preview_bbox_uses_person_annotations_for_the_image() -> None:
             }
         ],
     }
-    person = {
+    person: dict[str, Any] = {
         "person_id": 34,
         "faces": [
             {
@@ -83,7 +86,9 @@ def test_person_preview_bbox_uses_person_annotations_for_the_image() -> None:
     assert person_preview_bbox(entry, 34, person) == [20.0, 30.0, 80.0, 90.0]
 
 
-def test_resolve_workspaces_root_uses_the_environment(monkeypatch, tmp_path) -> None:
+def test_resolve_workspaces_root_uses_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("FACES_WORKSPACES_DIR", str(tmp_path / "spaces"))
 
     assert resolve_workspaces_root() == (tmp_path / "spaces").resolve()
@@ -99,7 +104,7 @@ def test_validate_workspace_name_rejects_invalid_names(workspace_name: str) -> N
         validate_workspace_name(workspace_name)
 
 
-def test_ensure_workspace_layout_creates_workspace_directories(tmp_path) -> None:
+def test_ensure_workspace_layout_creates_workspace_directories(tmp_path: Path) -> None:
     root = tmp_path / "workspaces"
 
     workspace_dir = ensure_workspace_layout(root, DEFAULT_WORKSPACE_NAME)
@@ -112,14 +117,14 @@ def test_ensure_workspace_layout_creates_workspace_directories(tmp_path) -> None
     )
 
 
-def test_normalize_report_media_paths_rewrites_workspace_paths(tmp_path) -> None:
+def test_normalize_report_media_paths_rewrites_workspace_paths(tmp_path: Path) -> None:
     root = tmp_path / "workspaces"
     ensure_workspace_layout(root, DEFAULT_WORKSPACE_NAME)
 
     image_path = workspace_photos_dir(root, DEFAULT_WORKSPACE_NAME) / "apple.png"
     image_path.write_bytes(b"image")
 
-    report = {
+    report: dict[str, Any] = {
         "images": [
             {
                 "image": str(image_path.resolve()),

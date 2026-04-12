@@ -5,11 +5,24 @@ import hashlib
 import warnings
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence, cast
+from typing import Any, Mapping, Protocol, Sequence, cast
 
-if TYPE_CHECKING:
-    from supervision import Detections
-    from ultralytics import YOLO
+from supervision import Detections
+
+
+class ModelLike(Protocol):
+    def __call__(self, source: Any, *, verbose: bool = False) -> Sequence[Any]: ...
+
+
+class FaceAnalysisFace(Protocol):
+    bbox: Sequence[float]
+    normed_embedding: Sequence[float]
+
+
+class FaceEncoder(Protocol):
+    def prepare(self, ctx_id: int, det_size: tuple[int, int]) -> None: ...
+
+    def get(self, image: Any) -> Sequence[FaceAnalysisFace] | None: ...
 
 DEFAULT_MODEL_REPO = "arnabdhar/YOLOv8-Face-Detection"
 DEFAULT_MODEL_FILE = "model.pt"
@@ -93,25 +106,24 @@ def hashes_for_file(path: Path) -> dict[str, str]:
     return {"sha256": sha256_file(path)}
 
 
-def load_model(model_repo: str, model_file: str) -> YOLO:
+def load_model(model_repo: str, model_file: str) -> ModelLike:
     from huggingface_hub import hf_hub_download
-    from ultralytics import YOLO
+    from ultralytics import YOLO as UltralyticsYOLO  # type: ignore[attr-defined]
 
     model_path = hf_hub_download(repo_id=model_repo, filename=model_file)
-    return YOLO(model_path)
+    return cast(ModelLike, UltralyticsYOLO(model_path))
 
 
-def load_face_encoder(embedding_model: str):
-    from insightface.app import FaceAnalysis
+def load_face_encoder(embedding_model: str) -> FaceEncoder:
+    from insightface.app import FaceAnalysis  # type: ignore[import-untyped]
 
     encoder = FaceAnalysis(name=embedding_model, providers=["CPUExecutionProvider"])
     encoder.prepare(ctx_id=-1, det_size=(640, 640))
-    return encoder
+    return cast(FaceEncoder, encoder)
 
 
-def detect_faces(model: YOLO, image_path: Path, confidence: float) -> Detections:
+def detect_faces(model: ModelLike, image_path: Path, confidence: float) -> Detections:
     from PIL import Image
-    from supervision import Detections
 
     with Image.open(image_path) as image_file:
         image = image_file.convert("RGB")
@@ -126,7 +138,11 @@ def detect_faces(model: YOLO, image_path: Path, confidence: float) -> Detections
 
 
 def detections_to_faces(detections: Detections) -> list[dict[str, Any]]:
-    confidences = detections.confidence if detections.confidence is not None else []
+    confidences: Sequence[float] = (
+        cast(Sequence[float], detections.confidence)
+        if detections.confidence is not None
+        else []
+    )
     faces: list[dict[str, Any]] = []
 
     for index, xyxy in enumerate(detections.xyxy):
@@ -260,7 +276,9 @@ def bbox_iou(left_bbox: Sequence[float], right_bbox: Sequence[float]) -> float:
     return float(intersection_area / union_area)
 
 
-def load_face_analysis_faces(face_encoder, image_path: Path) -> list[Any]:
+def load_face_analysis_faces(
+    face_encoder: FaceEncoder, image_path: Path
+) -> list[FaceAnalysisFace]:
     import cv2
 
     image = cv2.imread(str(image_path))
@@ -283,7 +301,7 @@ def load_face_analysis_faces(face_encoder, image_path: Path) -> list[Any]:
 
 
 def match_embeddings_to_detections(
-    face_encoder,
+    face_encoder: FaceEncoder,
     image_path: Path,
     faces: Sequence[dict[str, Any]],
 ) -> list[list[float] | None]:
@@ -390,19 +408,19 @@ def assign_face_to_person_with_next_id(
 
 def annotated_output_path(root: Path, image_path: Path, annotated_dir: Path) -> Path:
     if root.is_dir():
-        relative_path = image_path.relative_to(root)
+        relative_value: Path | str = image_path.relative_to(root)
     else:
-        relative_path = image_path.name
+        relative_value = image_path.name
 
-    relative_path = Path(relative_path)
+    relative_path = Path(relative_value)
     return annotated_dir / relative_path.with_name(
         f"{relative_path.stem}_faces{relative_path.suffix}"
     )
 
 
 def scan_image_entry(
-    model: YOLO,
-    face_encoder,
+    model: ModelLike,
+    face_encoder: FaceEncoder | None,
     image_path: Path,
     confidence: float,
     added_at_ns: int,
@@ -417,6 +435,8 @@ def scan_image_entry(
     stored_image_value = stored_media_path(image_path, storage_root)
 
     if group_by_person:
+        if face_encoder is None:
+            raise ValueError("Face encoder is required when grouping by person.")
         embeddings = match_embeddings_to_detections(face_encoder, image_path, faces)
         for face_index, (face, embedding) in enumerate(zip(faces, embeddings)):
             if embedding is None:

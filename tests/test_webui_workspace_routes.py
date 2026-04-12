@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any, cast
 
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
@@ -147,9 +148,9 @@ def seed_workspace_root(workspaces_root: Path) -> None:
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
 
-def read_report(workspaces_root: Path, workspace_name: str) -> dict:
+def read_report(workspaces_root: Path, workspace_name: str) -> dict[str, Any]:
     report_path = workspace_report_path(workspaces_root, workspace_name)
-    return json.loads(report_path.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], json.loads(report_path.read_text(encoding="utf-8")))
 
 
 def make_client(tmp_path: Path) -> tuple[TestClient, Path]:
@@ -158,7 +159,7 @@ def make_client(tmp_path: Path) -> tuple[TestClient, Path]:
     return TestClient(create_app(workspaces_root)), workspaces_root
 
 
-def test_workspace_cookie_defaults_and_switches(tmp_path) -> None:
+def test_workspace_cookie_defaults_and_switches(tmp_path: Path) -> None:
     client, workspaces_root = make_client(tmp_path)
 
     response = client.get("/")
@@ -181,7 +182,9 @@ def test_workspace_cookie_defaults_and_switches(tmp_path) -> None:
     assert read_report(workspaces_root, DEFAULT_WORKSPACE_NAME)["images"]
 
 
-def test_workspace_create_route_creates_directories_and_sets_cookie(tmp_path) -> None:
+def test_workspace_create_route_creates_directories_and_sets_cookie(
+    tmp_path: Path,
+) -> None:
     client, workspaces_root = make_client(tmp_path)
 
     response = client.post(
@@ -200,7 +203,9 @@ def test_workspace_create_route_creates_directories_and_sets_cookie(tmp_path) ->
     assert 'class="workspace-chip-value">default<' in response.text
 
 
-def test_person_transfer_copy_only_keeps_source_workspace_intact(tmp_path) -> None:
+def test_person_transfer_copy_only_keeps_source_workspace_intact(
+    tmp_path: Path,
+) -> None:
     client, workspaces_root = make_client(tmp_path)
 
     response = client.post(
@@ -225,7 +230,7 @@ def test_person_transfer_copy_only_keeps_source_workspace_intact(tmp_path) -> No
     assert target_report["people"][0]["name"] == "Zulu"
 
 
-def test_person_transfer_move_keeps_source_workspace_intact(tmp_path) -> None:
+def test_person_transfer_move_keeps_source_workspace_intact(tmp_path: Path) -> None:
     client, workspaces_root = make_client(tmp_path)
 
     response = client.post(
@@ -250,7 +255,7 @@ def test_person_transfer_move_keeps_source_workspace_intact(tmp_path) -> None:
     assert target_report["people"][0]["person_id"] == 1
 
 
-def test_person_transfer_warns_before_moving_mixed_images(tmp_path) -> None:
+def test_person_transfer_warns_before_moving_mixed_images(tmp_path: Path) -> None:
     client, _ = make_client(tmp_path)
 
     response = client.post(
@@ -266,7 +271,7 @@ def test_person_transfer_warns_before_moving_mixed_images(tmp_path) -> None:
     assert "linked image(s) also contain other people" in response.text
 
 
-def test_person_export_writes_faces_into_workspace_exports(tmp_path) -> None:
+def test_person_export_writes_faces_into_workspace_exports(tmp_path: Path) -> None:
     client, workspaces_root = make_client(tmp_path)
 
     response = client.post(

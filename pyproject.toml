@@ -37,6 +37,9 @@ image_yolo_faces = ["templates/*.html", "static/*", "static/**/*"]
 [tool.uv]
 package = true
 
+[tool.mypy]
+files = ["image_yolo_faces", "tests", "frontend/tests/support", "scripts"]
+
 [dependency-groups]
 dev = [
     "mypy>=1.20.0",
