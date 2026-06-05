@@ -8,8 +8,8 @@ original photos, a JSON report, and any cropped face exports all live together.
 ## What You Can Do
 
 - Scan folders of images for faces with the
-  `arnabdhar/YOLOv8-Face-Detection` model from Hugging Face.
-- Group repeated faces into people with InsightFace embeddings.
+  [arnabdhar/YOLOv8-Face-Detection](https://huggingface.co/arnabdhar/YOLOv8-Face-Detection) model from Hugging Face.
+- Group repeated faces into people with [InsightFace](https://github.com/deepinsight/insightface) embeddings. (This'll cache to ~/.cache/insightface)
 - Review annotated images in a browser, with face boxes and person labels drawn
   on demand.
 - Name people, merge duplicate people, and split incorrectly grouped images into

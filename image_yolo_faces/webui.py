@@ -2675,8 +2675,9 @@ def main(workspaces_dir: Path | None, host: str, port: int) -> None:
 
     click.echo(f"Serving workspaces in {workspaces_dir} at http://{host}:{port}")
     app = App(resolve_workspaces_root(workspaces_dir))
+
     uvicorn.run(
-        app.create_app,
+        app.create_app(),
         host=host,
         port=port,
     )

@@ -24,6 +24,7 @@ class FaceEncoder(Protocol):
 
     def get(self, image: Any) -> Sequence[FaceAnalysisFace] | None: ...
 
+
 DEFAULT_MODEL_REPO = "arnabdhar/YOLOv8-Face-Detection"
 DEFAULT_MODEL_FILE = "model.pt"
 DEFAULT_EMBEDDING_MODEL = "buffalo_l"
@@ -117,7 +118,11 @@ def load_model(model_repo: str, model_file: str) -> ModelLike:
 def load_face_encoder(embedding_model: str) -> FaceEncoder:
     from insightface.app import FaceAnalysis  # type: ignore[import-untyped]
 
-    encoder = FaceAnalysis(name=embedding_model, providers=["CPUExecutionProvider"])
+    encoder = FaceAnalysis(
+        name=embedding_model,
+        providers=["CPUExecutionProvider"],
+        root="~/.cache/insightface",
+    )
     encoder.prepare(ctx_id=-1, det_size=(640, 640))
     return cast(FaceEncoder, encoder)
 
