@@ -4,7 +4,7 @@ Batch face detection for image folders using the `arnabdhar/YOLOv8-Face-Detectio
 
 ## Layout
 
-The app now stores data in workspaces. By default they live under `./workspaces`, or you can override that with `FACES_WORKSPACES_DIR`.
+The app stores data in workspaces. By default they live under `./workspaces`, or you can override that with `FACES_WORKSPACES_DIR`.
 
 Each workspace contains:
 
