@@ -1,5 +1,5 @@
 ---
-name: mypy
+name: Type checking/linting
 
 "on":
   push:
@@ -17,6 +17,6 @@ jobs:
         with:
           activate-environment: "true"
           github-token: ${{ github.token }}
-      - name: Running mypy
+      - name: Running type checking
         run: |
-          uv run mypy --strict $(basename $(pwd) | sed -E 's/-/_/g') tests/
+          uv run ty check
