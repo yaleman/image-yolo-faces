@@ -8,7 +8,7 @@ from typing import Any, cast
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
-from image_yolo_faces.webui import create_app
+from image_yolo_faces.webui import App
 from image_yolo_faces.workspaces import (
     DEFAULT_WORKSPACE_NAME,
     ensure_workspace_layout,
@@ -69,7 +69,7 @@ def seed_workspace_root(workspaces_root: Path) -> None:
                         "bbox": apple_bbox_secondary,
                         "confidence": 0.91,
                         "person_id": 1,
-                    }
+                    },
                 ],
                 "added_at": 1_000_000_000,
                 "hashes": {"sha256": sha256_file(apple_image)},
@@ -156,7 +156,8 @@ def read_report(workspaces_root: Path, workspace_name: str) -> dict[str, Any]:
 def make_client(tmp_path: Path) -> tuple[TestClient, Path]:
     workspaces_root = tmp_path / "workspaces"
     seed_workspace_root(workspaces_root)
-    return TestClient(create_app(workspaces_root)), workspaces_root
+    app = App(workspaces_root)
+    return TestClient(app.create_app()), workspaces_root
 
 
 def test_workspace_cookie_defaults_and_switches(tmp_path: Path) -> None:
@@ -193,9 +194,7 @@ def test_workspace_create_route_creates_directories_and_sets_cookie(
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert "faces_workspace=research_2026" not in response.headers.get(
-        "set-cookie", ""
-    )
+    assert "faces_workspace=research_2026" not in response.headers.get("set-cookie", "")
     assert (workspaces_root / "research_2026" / "photos").is_dir()
 
     response = client.get("/")
@@ -285,7 +284,9 @@ def test_person_export_writes_faces_into_workspace_exports(tmp_path: Path) -> No
     export_dir = workspace_exports_dir(workspaces_root, DEFAULT_WORKSPACE_NAME) / "Zulu"
     assert export_dir.is_dir()
 
-    exported_files = sorted(path.name for path in export_dir.iterdir() if path.is_file())
+    exported_files = sorted(
+        path.name for path in export_dir.iterdir() if path.is_file()
+    )
     assert exported_files == [
         "Zulu-apple.png",
         "Zulu-zebra.png",

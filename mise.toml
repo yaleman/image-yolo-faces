@@ -38,4 +38,4 @@ depends = ["frontend-check", "python-check"]
 
 [tasks.start]
 depends = ["build-frontend", "python-check"]
-run = ["uv run image-yolo-faces-web --reload"]
+run = ["uv run image-yolo-faces-web"]

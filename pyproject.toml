@@ -22,7 +22,7 @@ dependencies = [
 
 [project.scripts]
 image-yolo-faces = "image_yolo_faces.cli:cli"
-image-yolo-faces-web = "image_yolo_faces.web:main"
+image-yolo-faces-web = "image_yolo_faces.webui:main"
 
 [build-system]
 requires = ["setuptools>=64", "wheel"]

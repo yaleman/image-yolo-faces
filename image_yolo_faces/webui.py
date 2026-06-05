@@ -3,7 +3,6 @@ from __future__ import annotations
 import html
 import json
 import logging
-import os
 import re
 import shutil
 import threading
@@ -66,7 +65,7 @@ logger.level = logging.INFO
 INVALID_EXPORT_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 __all__ = [
-    "create_app",
+    "App",
     "person_preview_bbox",
     "preview_crop_box",
     "representative_face_bbox",
@@ -100,7 +99,9 @@ def sanitize_export_component(value: str) -> str:
     return cleaned or "Export"
 
 
-def export_image_bytes(image_path: Path, bbox: list[float], suffix: str) -> bytes | None:
+def export_image_bytes(
+    image_path: Path, bbox: list[float], suffix: str
+) -> bytes | None:
     from PIL import Image, ImageOps
 
     try:
@@ -971,7 +972,8 @@ class ReportStore:
 
         if exported_count == 0:
             raise HTTPException(
-                status_code=400, detail="No exportable faces were found for this person."
+                status_code=400,
+                detail="No exportable faces were found for this person.",
             )
 
         return person_export_dir
@@ -2104,531 +2106,546 @@ class WorkspaceManager:
         return self.ensure_workspace(workspace_name)
 
 
-def create_app(workspaces_root: Path | None = None) -> FastAPI:
-    resolved_workspaces_root = resolve_workspaces_root(workspaces_root)
-    manager = WorkspaceManager(resolved_workspaces_root)
-    manager.ensure_workspace(DEFAULT_WORKSPACE_NAME)
+class App:
+    def __init__(self, workspaces_root: Path) -> None:
+        self.manager = WorkspaceManager(resolve_workspaces_root(workspaces_root))
+        self.manager.ensure_workspace(DEFAULT_WORKSPACE_NAME)
+        self.workspaces_root = workspaces_root
 
-    app = FastAPI(title="image-yolo-faces")
-    templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
-    static_dir = Path(__file__).with_name("static")
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
-    frontend_assets_globals = cast(dict[str, Any], templates.env.globals)
-    frontend_assets_globals["frontend_assets"] = FrontendAssetsProxy(static_dir)
-    app.state.workspace_manager = manager
+    def create_app(self) -> FastAPI:
+        resolved_workspaces_root = resolve_workspaces_root(self.workspaces_root)
+        manager = WorkspaceManager(resolved_workspaces_root)
+        manager.ensure_workspace(DEFAULT_WORKSPACE_NAME)
 
-    @app.middleware("http")
-    async def workspace_context_middleware(
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        requested_workspace = request.cookies.get(WORKSPACE_COOKIE_NAME)
-        workspace_name = DEFAULT_WORKSPACE_NAME
-        set_cookie = False
-
-        if isinstance(requested_workspace, str) and requested_workspace.strip():
-            try:
-                cleaned_workspace = validate_workspace_name(requested_workspace)
-            except ValueError:
-                set_cookie = True
-            else:
-                if cleaned_workspace in manager.workspace_names():
-                    workspace_name = cleaned_workspace
-                else:
-                    set_cookie = True
-        else:
-            set_cookie = True
-
-        store = manager.ensure_workspace(workspace_name)
-        request.state.workspace_name = workspace_name
-        request.state.workspace_store = store
-        request.state.workspace_names = manager.workspace_names()
-
-        response = await call_next(request)
-        if set_cookie:
-            set_workspace_cookie(response, workspace_name)
-        return response
-
-    def update_person_profile(
-        store: ReportStore, person_id: int, name: str, merge_into: str
-    ) -> tuple[int, set[str]]:
-        target_id = person_id
-        affected_images: set[str] = set()
-
-        merge_target = merge_into.strip()
-        if merge_target:
-            try:
-                merge_target_id = int(merge_target)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=400, detail="Merge target must be a person ID."
-                ) from exc
-
-            if merge_target_id != person_id:
-                affected_images.update(store.merge_people(person_id, merge_target_id))
-                target_id = merge_target_id
-
-        cleaned_name = name.strip()
-        if cleaned_name:
-            affected_images.update(store.rename_person(target_id, cleaned_name))
-
-        return target_id, affected_images
-
-    def current_workspace_name(request: Request) -> str:
-        workspace_name = getattr(
-            request.state, "workspace_name", DEFAULT_WORKSPACE_NAME
+        app = FastAPI(title="image-yolo-faces")
+        templates = Jinja2Templates(
+            directory=str(Path(__file__).with_name("templates"))
         )
-        if isinstance(workspace_name, str) and workspace_name.strip():
-            return workspace_name
-        return DEFAULT_WORKSPACE_NAME
+        static_dir = Path(__file__).with_name("static")
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+        frontend_assets_globals = cast(dict[str, Any], templates.env.globals)
+        frontend_assets_globals["frontend_assets"] = FrontendAssetsProxy(static_dir)
+        app.state.workspace_manager = manager
 
-    def current_store(request: Request) -> ReportStore:
-        store = getattr(request.state, "workspace_store", None)
-        if isinstance(store, ReportStore):
-            return store
-        workspace_name = current_workspace_name(request)
-        store = manager.ensure_workspace(workspace_name)
-        request.state.workspace_store = store
-        return store
+        @app.middleware("http")
+        async def workspace_context_middleware(
+            request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        ) -> Response:
+            requested_workspace = request.cookies.get(WORKSPACE_COOKIE_NAME)
+            workspace_name = DEFAULT_WORKSPACE_NAME
+            set_cookie = False
 
-    def workspace_context_for_request(request: Request) -> dict[str, Any]:
-        workspace_name = current_workspace_name(request)
-        return workspace_context(manager.workspaces_root, workspace_name)
-
-    @app.get("/", response_class=HTMLResponse)
-    def index(
-        request: Request, q: str = "", sort: str = "", unnamed: bool = False
-    ) -> HTMLResponse:
-        store = current_store(request)
-        context = build_index_context(store, q, sort, unnamed)
-        context.update(workspace_context_for_request(request))
-        return templates.TemplateResponse(request, "index.html", context)
-
-    @app.get("/people", response_class=HTMLResponse)
-    def people_index(
-        request: Request, q: str = "", sort: str = "", unnamed: bool = False
-    ) -> HTMLResponse:
-        store = current_store(request)
-        context = build_people_context(store, q, sort, unnamed)
-        context.update(workspace_context_for_request(request))
-        return templates.TemplateResponse(request, "people.html", context)
-
-    @app.get("/people/{person_id}", response_class=HTMLResponse)
-    def person_detail(
-        request: Request,
-        person_id: int,
-        q: str = "",
-        sort: str = "",
-        unnamed: bool = False,
-    ) -> HTMLResponse:
-        store = current_store(request)
-        context = build_person_context(store, person_id, q, sort, unnamed)
-        context.update(workspace_context_for_request(request))
-        workspace_names = request.state.workspace_names
-        current_name = current_workspace_name(request)
-        context["transfer_target_workspace"] = current_name
-        context["transfer_target_options"] = [
-            workspace_name
-            for workspace_name in workspace_names
-            if workspace_name != current_name
-        ]
-        context["transfer_preview"] = None
-        context["transfer_mode"] = "copy"
-        return templates.TemplateResponse(request, "person.html", context)
-
-    @app.get("/images/{image_id}", response_class=HTMLResponse)
-    def image_detail(
-        request: Request,
-        image_id: str,
-        q: str = "",
-        sort: str = "",
-        unnamed: bool = False,
-    ) -> HTMLResponse:
-        store = current_store(request)
-        context = build_image_detail_context(store, image_id, q, sort, unnamed)
-        context.update(workspace_context_for_request(request))
-        return templates.TemplateResponse(request, "image.html", context)
-
-    @app.get("/media/person-preview/{image_id}/{person_id}")
-    def person_preview_media(
-        request: Request, image_id: str, person_id: int
-    ) -> Response:
-        store = current_store(request)
-        with store.lock:
-            image_lookup = store.image_index()
-            person_lookup = store.person_index()
-            entry = image_lookup.get(image_id)
-            if entry is None:
-                raise HTTPException(status_code=404, detail="Image not found.")
-
-            image_value = entry.get("image")
-            if not isinstance(image_value, str):
-                raise HTTPException(status_code=404, detail="Image path missing.")
-
-            image_path = original_media_path(store, image_value)
-            person = person_lookup.get(person_id)
-            bbox = person_preview_bbox(entry, person_id, person, store.workspace_dir)
-            if bbox is None or image_path is None or not image_path.exists():
-                return Response(
-                    content=placeholder_svg_bytes(
-                        person_display_name(person, person_id)
-                    ),
-                    media_type="image/svg+xml",
-                    headers={"Cache-Control": "no-store"},
-                )
-
-            preview_bytes = preview_image_bytes(image_path, bbox)
-            if preview_bytes is None:
-                return Response(
-                    content=placeholder_svg_bytes(
-                        person_display_name(person, person_id)
-                    ),
-                    media_type="image/svg+xml",
-                    headers={"Cache-Control": "no-store"},
-                )
-
-            return Response(
-                content=preview_bytes,
-                media_type="image/jpeg",
-                headers={"Cache-Control": "no-store"},
-            )
-
-    @app.get("/media/face-preview/{image_id}/{face_index}")
-    def face_preview_media(
-        request: Request, image_id: str, face_index: int
-    ) -> Response:
-        store = current_store(request)
-        with store.lock:
-            entry = store.image_index().get(image_id)
-            if entry is None:
-                raise HTTPException(status_code=404, detail="Image not found.")
-
-            image_value = entry.get("image")
-            if not isinstance(image_value, str):
-                raise HTTPException(status_code=404, detail="Image path missing.")
-
-            faces = entry.get("faces", [])
-            if (
-                not isinstance(faces, list)
-                or face_index < 0
-                or face_index >= len(faces)
-            ):
-                return Response(
-                    content=placeholder_svg_bytes("Face preview"),
-                    media_type="image/svg+xml",
-                    headers={"Cache-Control": "no-store"},
-                )
-
-            face = faces[face_index]
-            if not isinstance(face, dict):
-                return Response(
-                    content=placeholder_svg_bytes("Face preview"),
-                    media_type="image/svg+xml",
-                    headers={"Cache-Control": "no-store"},
-                )
-
-            bbox = face.get("bbox")
-            image_path = original_media_path(store, image_value)
-            if (
-                not isinstance(bbox, list)
-                or len(bbox) != 4
-                or not all(isinstance(value, int | float) for value in bbox)
-                or image_path is None
-                or not image_path.exists()
-            ):
-                return Response(
-                    content=placeholder_svg_bytes("Face preview"),
-                    media_type="image/svg+xml",
-                    headers={"Cache-Control": "no-store"},
-                )
-
-            preview_bytes = preview_image_bytes(
-                image_path, [float(value) for value in bbox]
-            )
-            if preview_bytes is None:
-                return Response(
-                    content=placeholder_svg_bytes("Face preview"),
-                    media_type="image/svg+xml",
-                    headers={"Cache-Control": "no-store"},
-                )
-
-            return Response(
-                content=preview_bytes,
-                media_type="image/jpeg",
-                headers={"Cache-Control": "no-store"},
-            )
-
-    @app.get("/media/original/{image_id}")
-    def original_media(request: Request, image_id: str) -> FileResponse:
-        store = current_store(request)
-        with store.lock:
-            entry = store.image_index().get(image_id)
-            if entry is None:
-                raise HTTPException(status_code=404, detail="Image not found.")
-
-            image_value = entry.get("image")
-            if not isinstance(image_value, str):
-                raise HTTPException(status_code=404, detail="Image path missing.")
-
-            path = original_media_path(store, image_value)
-            if path is None or not path.exists():
-                raise HTTPException(
-                    status_code=404, detail="Original image file not found."
-                )
-
-            return FileResponse(path, headers={"Cache-Control": "no-store"})
-
-    @app.get("/media/annotated/{image_id}")
-    def annotated_media(request: Request, image_id: str) -> Response:
-        store = current_store(request)
-        with store.lock:
-            entry = store.image_index().get(image_id)
-            if entry is None:
-                raise HTTPException(status_code=404, detail="Image not found.")
-
-            image_value = entry.get("image")
-            if not isinstance(image_value, str):
-                raise HTTPException(status_code=404, detail="Image path missing.")
-
-            original_path = original_media_path(store, image_value)
-            if not original_path.exists():
-                return Response(
-                    content=placeholder_svg_bytes("Annotated preview"),
-                    media_type="image/svg+xml",
-                    headers={"Cache-Control": "no-store"},
-                )
-
-            faces = entry.get("faces", [])
-            if not isinstance(faces, list):
-                faces = []
-
-            annotated_bytes = render_faces_bytes(
-                original_path,
-                faces,
-                person_labels=store.display_name_map(),
-            )
-            return Response(
-                content=annotated_bytes,
-                media_type="image/jpeg",
-                headers={"Cache-Control": "no-store"},
-            )
-
-    @app.post("/uploads")
-    async def upload_image(
-        request: Request, image: list[UploadFile] = File(...)
-    ) -> JSONResponse:
-        store = current_store(request)
-        uploads = image or []
-        results: list[dict[str, str]] = []
-        logger.warning("Received %d uploaded files.", len(uploads))
-        for upload in uploads:
-            filename = upload.filename or "upload"
-            content = await upload.read()
-            with store.lock:
+            if isinstance(requested_workspace, str) and requested_workspace.strip():
                 try:
-                    result = store.import_uploaded_image(filename, content)
-                    result["filename"] = filename
-                    results.append(result)
-                except HTTPException as exc:
-                    results.append(
-                        {
-                            "status": "error",
-                            "filename": filename,
-                            "detail": str(exc.detail),
-                        }
+                    cleaned_workspace = validate_workspace_name(requested_workspace)
+                except ValueError:
+                    set_cookie = True
+                else:
+                    if cleaned_workspace in manager.workspace_names():
+                        workspace_name = cleaned_workspace
+                    else:
+                        set_cookie = True
+            else:
+                set_cookie = True
+
+            store = manager.ensure_workspace(workspace_name)
+            request.state.workspace_name = workspace_name
+            request.state.workspace_store = store
+            request.state.workspace_names = manager.workspace_names()
+
+            response = await call_next(request)
+            if set_cookie:
+                set_workspace_cookie(response, workspace_name)
+            return response
+
+        def update_person_profile(
+            store: ReportStore, person_id: int, name: str, merge_into: str
+        ) -> tuple[int, set[str]]:
+            target_id = person_id
+            affected_images: set[str] = set()
+
+            merge_target = merge_into.strip()
+            if merge_target:
+                try:
+                    merge_target_id = int(merge_target)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=400, detail="Merge target must be a person ID."
+                    ) from exc
+
+                if merge_target_id != person_id:
+                    affected_images.update(
+                        store.merge_people(person_id, merge_target_id)
                     )
-                except Exception:
-                    results.append(
-                        {
-                            "status": "error",
-                            "filename": filename,
-                            "detail": "Upload failed.",
-                        }
-                    )
+                    target_id = merge_target_id
 
-        return JSONResponse({"results": results})
+            cleaned_name = name.strip()
+            if cleaned_name:
+                affected_images.update(store.rename_person(target_id, cleaned_name))
 
-    @app.post("/images/{image_id}/people/{person_id}")
-    def update_image_person(
-        request: Request,
-        image_id: str,
-        person_id: int,
-        name: str = Form(""),
-        merge_into: str = Form(""),
-    ) -> RedirectResponse:
-        store = current_store(request)
-        with store.lock:
-            if image_id not in store.image_index():
-                raise HTTPException(status_code=404, detail="Image not found.")
+            return target_id, affected_images
 
-            _, affected_images = update_person_profile(
-                store, person_id, name, merge_into
+        def current_workspace_name(request: Request) -> str:
+            workspace_name = getattr(
+                request.state, "workspace_name", DEFAULT_WORKSPACE_NAME
             )
-            store.save()
-            store.re_render_images(affected_images)
+            if isinstance(workspace_name, str) and workspace_name.strip():
+                return workspace_name
+            return DEFAULT_WORKSPACE_NAME
 
-        return RedirectResponse(url=f"/images/{image_id}", status_code=303)
+        def current_store(request: Request) -> ReportStore:
+            store = getattr(request.state, "workspace_store", None)
+            if isinstance(store, ReportStore):
+                return store
+            workspace_name = current_workspace_name(request)
+            store = manager.ensure_workspace(workspace_name)
+            request.state.workspace_store = store
+            return store
 
-    @app.post("/images/{image_id}/delete")
-    def delete_image(request: Request, image_id: str) -> RedirectResponse:
-        store = current_store(request)
-        with store.lock:
-            store.delete_image(image_id)
-        return RedirectResponse(url="/", status_code=303)
+        def workspace_context_for_request(request: Request) -> dict[str, Any]:
+            workspace_name = current_workspace_name(request)
+            return workspace_context(manager.workspaces_root, workspace_name)
 
-    @app.post("/people/{person_id}")
-    def update_people_person(
-        request: Request,
-        person_id: int,
-        name: str = Form(""),
-        merge_into: str = Form(""),
-    ) -> RedirectResponse:
-        store = current_store(request)
-        with store.lock:
-            if person_id not in store.person_index():
-                raise HTTPException(status_code=404, detail="Person not found.")
-
-            target_id, affected_images = update_person_profile(
-                store, person_id, name, merge_into
-            )
-            store.save()
-            store.re_render_images(affected_images)
-
-        return RedirectResponse(url=f"/people/{target_id}", status_code=303)
-
-    @app.post("/people/{person_id}/split")
-    def split_person_images(
-        request: Request,
-        person_id: int,
-        selected_images: list[str] = Form(default=[]),
-        new_name: str = Form(""),
-    ) -> RedirectResponse:
-        store = current_store(request)
-        with store.lock:
-            if person_id not in store.person_index():
-                raise HTTPException(status_code=404, detail="Person not found.")
-
-            source_image_paths = store.image_paths_for_person(person_id)
-            selected_set = {
-                image for image in selected_images if image in source_image_paths
-            }
-            if not selected_set:
-                raise HTTPException(
-                    status_code=400, detail="Select at least one image to split."
-                )
-
-            affected_images = set(source_image_paths)
-            new_person_id = store.split_person_images_to_new_person(
-                person_id, selected_set, new_name
-            )
-            affected_images.update(selected_set)
-            affected_images.update(store.image_paths_for_person(new_person_id))
-            store.save()
-            store.re_render_images(affected_images)
-
-        return RedirectResponse(url=f"/people/{new_person_id}", status_code=303)
-
-    @app.post("/people/{person_id}/export")
-    def export_person(
-        request: Request,
-        person_id: int,
-        q: str = Form(""),
-        sort: str = Form(""),
-        unnamed: str = Form(""),
-    ) -> RedirectResponse:
-        store = current_store(request)
-        with store.lock:
-            store.export_person_faces(person_id)
-
-        return RedirectResponse(
-            url=with_query(f"/people/{person_id}", q, sort, unnamed == "1"),
-            status_code=303,
-        )
-
-    @app.post("/workspaces/select")
-    def select_workspace(
-        request: Request, workspace: str = Form("")
-    ) -> RedirectResponse:
-        cleaned_workspace = validate_workspace_name(workspace)
-        if cleaned_workspace not in request.state.workspace_names:
-            raise HTTPException(status_code=404, detail="Workspace not found.")
-
-        response = RedirectResponse(url="/", status_code=303)
-        set_workspace_cookie(response, cleaned_workspace)
-        return response
-
-    @app.post("/workspaces/create")
-    def create_workspace(
-        request: Request, workspace: str = Form("")
-    ) -> RedirectResponse:
-        cleaned_workspace = validate_workspace_name(workspace)
-        manager.ensure_workspace(cleaned_workspace)
-        return RedirectResponse(url="/", status_code=303)
-
-    @app.post("/people/{person_id}/transfer")
-    def transfer_person(
-        request: Request,
-        person_id: int,
-        target_workspace: str = Form(""),
-        transfer_mode: str = Form("copy"),
-        transfer_choice: str = Form(""),
-    ) -> Response:
-        source_store = current_store(request)
-        cleaned_target_workspace = validate_workspace_name(target_workspace)
-        if cleaned_target_workspace == current_workspace_name(request):
-            raise HTTPException(
-                status_code=400, detail="Choose a different workspace to transfer to."
-            )
-
-        target_store = manager.ensure_workspace(cleaned_target_workspace)
-        if person_id not in source_store.person_index():
-            raise HTTPException(status_code=404, detail="Person not found.")
-
-        q = request.query_params.get("q", "")
-        sort = request.query_params.get("sort", "")
-        unnamed = request.query_params.get("unnamed") == "1"
-        preview = source_store.person_transfer_preview(person_id)
-        mixed_images = preview["mixed_image_count"] > 0
-
-        if transfer_mode == "move" and not transfer_choice and mixed_images:
-            context = build_person_context(source_store, person_id, q, sort, unnamed)
+        @app.get("/", response_class=HTMLResponse)
+        def index(
+            request: Request, q: str = "", sort: str = "", unnamed: bool = False
+        ) -> HTMLResponse:
+            store = current_store(request)
+            context = build_index_context(store, q, sort, unnamed)
             context.update(workspace_context_for_request(request))
-            context["transfer_target_workspace"] = cleaned_target_workspace
+            return templates.TemplateResponse(request, "index.html", context)
+
+        @app.get("/people", response_class=HTMLResponse)
+        def people_index(
+            request: Request, q: str = "", sort: str = "", unnamed: bool = False
+        ) -> HTMLResponse:
+            store = current_store(request)
+            context = build_people_context(store, q, sort, unnamed)
+            context.update(workspace_context_for_request(request))
+            return templates.TemplateResponse(request, "people.html", context)
+
+        @app.get("/people/{person_id}", response_class=HTMLResponse)
+        def person_detail(
+            request: Request,
+            person_id: int,
+            q: str = "",
+            sort: str = "",
+            unnamed: bool = False,
+        ) -> HTMLResponse:
+            store = current_store(request)
+            context = build_person_context(store, person_id, q, sort, unnamed)
+            context.update(workspace_context_for_request(request))
+            workspace_names = request.state.workspace_names
+            current_name = current_workspace_name(request)
+            context["transfer_target_workspace"] = current_name
             context["transfer_target_options"] = [
                 workspace_name
-                for workspace_name in request.state.workspace_names
-                if workspace_name != current_workspace_name(request)
+                for workspace_name in workspace_names
+                if workspace_name != current_name
             ]
-            context["transfer_preview"] = preview
-            context["transfer_mode"] = "move"
-            context["transfer_choice"] = ""
+            context["transfer_preview"] = None
+            context["transfer_mode"] = "copy"
             return templates.TemplateResponse(request, "person.html", context)
 
-        move_linked = transfer_mode == "move"
-        if transfer_choice == "copy_only":
-            move_linked = False
-        elif transfer_choice == "move_linked":
-            move_linked = True
+        @app.get("/images/{image_id}", response_class=HTMLResponse)
+        def image_detail(
+            request: Request,
+            image_id: str,
+            q: str = "",
+            sort: str = "",
+            unnamed: bool = False,
+        ) -> HTMLResponse:
+            store = current_store(request)
+            context = build_image_detail_context(store, image_id, q, sort, unnamed)
+            context.update(workspace_context_for_request(request))
+            return templates.TemplateResponse(request, "image.html", context)
 
-        first_store, second_store = sorted(
-            [source_store, target_store], key=lambda item: str(item.report_path)
-        )
-        with first_store.lock:
-            with second_store.lock:
-                new_person_id, source_affected, target_affected = (
-                    source_store.transfer_person_to_workspace(
-                        person_id, target_store, move_linked
-                    )
+        @app.get("/media/person-preview/{image_id}/{person_id}")
+        def person_preview_media(
+            request: Request, image_id: str, person_id: int
+        ) -> Response:
+            store = current_store(request)
+            with store.lock:
+                image_lookup = store.image_index()
+                person_lookup = store.person_index()
+                entry = image_lookup.get(image_id)
+                if entry is None:
+                    raise HTTPException(status_code=404, detail="Image not found.")
+
+                image_value = entry.get("image")
+                if not isinstance(image_value, str):
+                    raise HTTPException(status_code=404, detail="Image path missing.")
+
+                image_path = original_media_path(store, image_value)
+                person = person_lookup.get(person_id)
+                bbox = person_preview_bbox(
+                    entry, person_id, person, store.workspace_dir
                 )
-                source_store.save()
-                target_store.save()
-                source_store.re_render_images(source_affected)
-                target_store.re_render_images(target_affected)
+                if bbox is None or image_path is None or not image_path.exists():
+                    return Response(
+                        content=placeholder_svg_bytes(
+                            person_display_name(person, person_id)
+                        ),
+                        media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"},
+                    )
 
-        response = RedirectResponse(url=f"/people/{new_person_id}", status_code=303)
-        set_workspace_cookie(response, cleaned_target_workspace)
-        return response
+                preview_bytes = preview_image_bytes(image_path, bbox)
+                if preview_bytes is None:
+                    return Response(
+                        content=placeholder_svg_bytes(
+                            person_display_name(person, person_id)
+                        ),
+                        media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"},
+                    )
 
-    return app
+                return Response(
+                    content=preview_bytes,
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"},
+                )
+
+        @app.get("/media/face-preview/{image_id}/{face_index}")
+        def face_preview_media(
+            request: Request, image_id: str, face_index: int
+        ) -> Response:
+            store = current_store(request)
+            with store.lock:
+                entry = store.image_index().get(image_id)
+                if entry is None:
+                    raise HTTPException(status_code=404, detail="Image not found.")
+
+                image_value = entry.get("image")
+                if not isinstance(image_value, str):
+                    raise HTTPException(status_code=404, detail="Image path missing.")
+
+                faces = entry.get("faces", [])
+                if (
+                    not isinstance(faces, list)
+                    or face_index < 0
+                    or face_index >= len(faces)
+                ):
+                    return Response(
+                        content=placeholder_svg_bytes("Face preview"),
+                        media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"},
+                    )
+
+                face = faces[face_index]
+                if not isinstance(face, dict):
+                    return Response(
+                        content=placeholder_svg_bytes("Face preview"),
+                        media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"},
+                    )
+
+                bbox = face.get("bbox")
+                image_path = original_media_path(store, image_value)
+                if (
+                    not isinstance(bbox, list)
+                    or len(bbox) != 4
+                    or not all(isinstance(value, int | float) for value in bbox)
+                    or image_path is None
+                    or not image_path.exists()
+                ):
+                    return Response(
+                        content=placeholder_svg_bytes("Face preview"),
+                        media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"},
+                    )
+
+                preview_bytes = preview_image_bytes(
+                    image_path, [float(value) for value in bbox]
+                )
+                if preview_bytes is None:
+                    return Response(
+                        content=placeholder_svg_bytes("Face preview"),
+                        media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"},
+                    )
+
+                return Response(
+                    content=preview_bytes,
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"},
+                )
+
+        @app.get("/media/original/{image_id}")
+        def original_media(request: Request, image_id: str) -> FileResponse:
+            store = current_store(request)
+            with store.lock:
+                entry = store.image_index().get(image_id)
+                if entry is None:
+                    raise HTTPException(status_code=404, detail="Image not found.")
+
+                image_value = entry.get("image")
+                if not isinstance(image_value, str):
+                    raise HTTPException(status_code=404, detail="Image path missing.")
+
+                path = original_media_path(store, image_value)
+                if path is None or not path.exists():
+                    raise HTTPException(
+                        status_code=404, detail="Original image file not found."
+                    )
+
+                return FileResponse(path, headers={"Cache-Control": "no-store"})
+
+        @app.get("/media/annotated/{image_id}")
+        def annotated_media(request: Request, image_id: str) -> Response:
+            store = current_store(request)
+            with store.lock:
+                entry = store.image_index().get(image_id)
+                if entry is None:
+                    raise HTTPException(status_code=404, detail="Image not found.")
+
+                image_value = entry.get("image")
+                if not isinstance(image_value, str):
+                    raise HTTPException(status_code=404, detail="Image path missing.")
+
+                original_path = original_media_path(store, image_value)
+                if not original_path.exists():
+                    return Response(
+                        content=placeholder_svg_bytes("Annotated preview"),
+                        media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"},
+                    )
+
+                faces = entry.get("faces", [])
+                if not isinstance(faces, list):
+                    faces = []
+
+                annotated_bytes = render_faces_bytes(
+                    original_path,
+                    faces,
+                    person_labels=store.display_name_map(),
+                )
+                return Response(
+                    content=annotated_bytes,
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"},
+                )
+
+        @app.post("/uploads")
+        async def upload_image(
+            request: Request, image: list[UploadFile] = File(...)
+        ) -> JSONResponse:
+            store = current_store(request)
+            uploads = image or []
+            results: list[dict[str, str]] = []
+            logger.warning("Received %d uploaded files.", len(uploads))
+            for upload in uploads:
+                filename = upload.filename or "upload"
+                content = await upload.read()
+                with store.lock:
+                    try:
+                        result = store.import_uploaded_image(filename, content)
+                        result["filename"] = filename
+                        results.append(result)
+                    except HTTPException as exc:
+                        results.append(
+                            {
+                                "status": "error",
+                                "filename": filename,
+                                "detail": str(exc.detail),
+                            }
+                        )
+                    except Exception:
+                        results.append(
+                            {
+                                "status": "error",
+                                "filename": filename,
+                                "detail": "Upload failed.",
+                            }
+                        )
+
+            return JSONResponse({"results": results})
+
+        @app.post("/images/{image_id}/people/{person_id}")
+        def update_image_person(
+            request: Request,
+            image_id: str,
+            person_id: int,
+            name: str = Form(""),
+            merge_into: str = Form(""),
+        ) -> RedirectResponse:
+            store = current_store(request)
+            with store.lock:
+                if image_id not in store.image_index():
+                    raise HTTPException(status_code=404, detail="Image not found.")
+
+                _, affected_images = update_person_profile(
+                    store, person_id, name, merge_into
+                )
+                store.save()
+                store.re_render_images(affected_images)
+
+            return RedirectResponse(url=f"/images/{image_id}", status_code=303)
+
+        @app.post("/images/{image_id}/delete")
+        def delete_image(request: Request, image_id: str) -> RedirectResponse:
+            store = current_store(request)
+            with store.lock:
+                store.delete_image(image_id)
+            return RedirectResponse(url="/", status_code=303)
+
+        @app.post("/people/{person_id}")
+        def update_people_person(
+            request: Request,
+            person_id: int,
+            name: str = Form(""),
+            merge_into: str = Form(""),
+        ) -> RedirectResponse:
+            store = current_store(request)
+            with store.lock:
+                if person_id not in store.person_index():
+                    raise HTTPException(status_code=404, detail="Person not found.")
+
+                target_id, affected_images = update_person_profile(
+                    store, person_id, name, merge_into
+                )
+                store.save()
+                store.re_render_images(affected_images)
+
+            return RedirectResponse(url=f"/people/{target_id}", status_code=303)
+
+        @app.post("/people/{person_id}/split")
+        def split_person_images(
+            request: Request,
+            person_id: int,
+            selected_images: list[str] = Form(default=[]),
+            new_name: str = Form(""),
+        ) -> RedirectResponse:
+            store = current_store(request)
+            with store.lock:
+                if person_id not in store.person_index():
+                    raise HTTPException(status_code=404, detail="Person not found.")
+
+                source_image_paths = store.image_paths_for_person(person_id)
+                selected_set = {
+                    image for image in selected_images if image in source_image_paths
+                }
+                if not selected_set:
+                    raise HTTPException(
+                        status_code=400, detail="Select at least one image to split."
+                    )
+
+                affected_images = set(source_image_paths)
+                new_person_id = store.split_person_images_to_new_person(
+                    person_id, selected_set, new_name
+                )
+                affected_images.update(selected_set)
+                affected_images.update(store.image_paths_for_person(new_person_id))
+                store.save()
+                store.re_render_images(affected_images)
+
+            return RedirectResponse(url=f"/people/{new_person_id}", status_code=303)
+
+        @app.post("/people/{person_id}/export")
+        def export_person(
+            request: Request,
+            person_id: int,
+            q: str = Form(""),
+            sort: str = Form(""),
+            unnamed: str = Form(""),
+        ) -> RedirectResponse:
+            store = current_store(request)
+            with store.lock:
+                store.export_person_faces(person_id)
+
+            return RedirectResponse(
+                url=with_query(f"/people/{person_id}", q, sort, unnamed == "1"),
+                status_code=303,
+            )
+
+        @app.post("/workspaces/select")
+        def select_workspace(
+            request: Request, workspace: str = Form("")
+        ) -> RedirectResponse:
+            cleaned_workspace = validate_workspace_name(workspace)
+            if cleaned_workspace not in request.state.workspace_names:
+                raise HTTPException(status_code=404, detail="Workspace not found.")
+
+            response = RedirectResponse(url="/", status_code=303)
+            set_workspace_cookie(response, cleaned_workspace)
+            return response
+
+        @app.post("/workspaces/create")
+        def create_workspace(
+            request: Request, workspace: str = Form("")
+        ) -> RedirectResponse:
+            cleaned_workspace = validate_workspace_name(workspace)
+            manager.ensure_workspace(cleaned_workspace)
+            return RedirectResponse(url="/", status_code=303)
+
+        @app.post("/people/{person_id}/transfer")
+        def transfer_person(
+            request: Request,
+            person_id: int,
+            target_workspace: str = Form(""),
+            transfer_mode: str = Form("copy"),
+            transfer_choice: str = Form(""),
+        ) -> Response:
+            source_store = current_store(request)
+            cleaned_target_workspace = validate_workspace_name(target_workspace)
+            if cleaned_target_workspace == current_workspace_name(request):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Choose a different workspace to transfer to.",
+                )
+
+            target_store = manager.ensure_workspace(cleaned_target_workspace)
+            if person_id not in source_store.person_index():
+                raise HTTPException(status_code=404, detail="Person not found.")
+
+            q = request.query_params.get("q", "")
+            sort = request.query_params.get("sort", "")
+            unnamed = request.query_params.get("unnamed") == "1"
+            preview = source_store.person_transfer_preview(person_id)
+            mixed_images = preview["mixed_image_count"] > 0
+
+            if transfer_mode == "move" and not transfer_choice and mixed_images:
+                context = build_person_context(
+                    source_store, person_id, q, sort, unnamed
+                )
+                context.update(workspace_context_for_request(request))
+                context["transfer_target_workspace"] = cleaned_target_workspace
+                context["transfer_target_options"] = [
+                    workspace_name
+                    for workspace_name in request.state.workspace_names
+                    if workspace_name != current_workspace_name(request)
+                ]
+                context["transfer_preview"] = preview
+                context["transfer_mode"] = "move"
+                context["transfer_choice"] = ""
+                return templates.TemplateResponse(request, "person.html", context)
+
+            move_linked = transfer_mode == "move"
+            if transfer_choice == "copy_only":
+                move_linked = False
+            elif transfer_choice == "move_linked":
+                move_linked = True
+
+            first_store, second_store = sorted(
+                [source_store, target_store], key=lambda item: str(item.report_path)
+            )
+            with first_store.lock:
+                with second_store.lock:
+                    new_person_id, source_affected, target_affected = (
+                        source_store.transfer_person_to_workspace(
+                            person_id, target_store, move_linked
+                        )
+                    )
+                    source_store.save()
+                    target_store.save()
+                    source_store.re_render_images(source_affected)
+                    target_store.re_render_images(target_affected)
+
+            response = RedirectResponse(url=f"/people/{new_person_id}", status_code=303)
+            set_workspace_cookie(response, cleaned_target_workspace)
+            return response
+
+        return app
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -2638,6 +2655,7 @@ def create_app(workspaces_root: Path | None = None) -> FastAPI:
     type=click.Path(path_type=Path, file_okay=False, exists=False),
     default=None,
     show_default=True,
+    envvar=WORKSPACES_DIR_ENV,
     help="Path to the directory that contains workspace folders.",
 )
 @click.option(
@@ -2653,28 +2671,12 @@ def create_app(workspaces_root: Path | None = None) -> FastAPI:
     type=click.IntRange(min=1, max=65535),
     help="Bind port for the web server.",
 )
-@click.option(
-    "--reload/--no-reload",
-    default=False,
-    show_default=True,
-    help="Restart the server when Python files or built frontend assets change.",
-)
-def main(workspaces_dir: Path | None, host: str, port: int, reload: bool) -> None:
-    resolved_workspaces_root = resolve_workspaces_root(workspaces_dir)
-    os.environ[WORKSPACES_DIR_ENV] = str(resolved_workspaces_root)
-    package_dir = Path(__file__).resolve().parent
-    reload_dirs = [
-        str(package_dir),
-        str(package_dir / "static" / "dist"),
-    ]
-    click.echo(
-        f"Serving workspaces in {resolved_workspaces_root} at http://{host}:{port}"
-    )
+def main(workspaces_dir: Path | None, host: str, port: int) -> None:
+
+    click.echo(f"Serving workspaces in {workspaces_dir} at http://{host}:{port}")
+    app = App(resolve_workspaces_root(workspaces_dir))
     uvicorn.run(
-        "image_yolo_faces.webui:create_app",
-        factory=True,
+        app.create_app,
         host=host,
         port=port,
-        reload=reload,
-        reload_dirs=reload_dirs if reload else None,
     )

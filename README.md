@@ -1,57 +1,93 @@
 # image-yolo-faces
 
-Batch face detection for image folders using the `arnabdhar/YOLOv8-Face-Detection` model from Hugging Face.
+`image-yolo-faces` scans photo collections for faces, groups repeated faces into
+people, and gives you a local web UI for reviewing and cleaning up the results.
+It is built for personal image sets where you want a simple workspace on disk:
+original photos, a JSON report, and any cropped face exports all live together.
 
-## Layout
+## What You Can Do
 
-The app stores data in workspaces. By default they live under `./workspaces`, or you can override that with `FACES_WORKSPACES_DIR`.
+- Scan folders of images for faces with the
+  `arnabdhar/YOLOv8-Face-Detection` model from Hugging Face.
+- Group repeated faces into people with InsightFace embeddings.
+- Review annotated images in a browser, with face boxes and person labels drawn
+  on demand.
+- Name people, merge duplicate people, and split incorrectly grouped images into
+  a new person.
+- Upload more images from the web UI and get per-file import results.
+- Search and sort images or people while keeping your current view state.
+- Keep separate photo collections in workspaces such as `default`,
+  `family_2026`, or `archive`.
+- Copy a person into another workspace, or move linked image and face data into a
+  target workspace while leaving the source workspace intact.
+- Export cropped face images for a person into that workspace's `exports/`
+  directory.
+
+## How It Works
+
+The app stores everything in workspaces. By default, workspaces live under
+`workspaces/`. Set `FACES_WORKSPACES_DIR` or pass `--workspaces-dir` if you want
+them somewhere else.
 
 Each workspace contains:
 
-- `faces.json`
-- `photos/`
-- `exports/`
+- `faces.json`: the report and the single source of truth for images, faces,
+  people, names, aliases, and scan configuration.
+- `photos/`: imported source images.
+- `exports/`: derived cropped face exports.
 
-`faces.json` stores filenames only. The UI loads originals from `photos/` and generates annotated previews at request time from the same image.
+The scanner imports images into the active workspace, records each image by
+filename, stores a SHA-256 hash for duplicate detection, and writes detections to
+`faces.json`. The web UI reads and writes the same report, so CLI scans and
+browser edits stay in sync.
 
-The `default` workspace is created on demand and is used when no workspace is selected.
+Annotated previews and face thumbnails are generated when the browser requests
+them. They are not stored as primary data. Exports are also derived files: when
+you export a person, cropped face images are written to `exports/<person name>/`
+without changing `faces.json`.
 
 ## Setup
 
+This project requires Python 3.13 or newer.
+
 ```bash
 uv sync
+pnpm install
 ```
 
-## CLI
+The first scan downloads the YOLO face model from Hugging Face. Person grouping
+also loads an InsightFace embedding model and runs on the CPU by default.
+
+## Scan Images From The CLI
 
 Scan a folder into the default workspace:
 
 ```bash
-uv run image-yolo-faces ./photos
+uv run image-yolo-faces photos/
 ```
 
-Write into a named workspace:
+Scan into a named workspace:
 
 ```bash
-uv run image-yolo-faces ./photos --workspace family_2026
+uv run image-yolo-faces photos/ --workspace family_2026
 ```
 
 Use a different workspace root:
 
 ```bash
-uv run image-yolo-faces ./photos --workspaces-dir /data/faces-workspaces
+uv run image-yolo-faces photos/ --workspaces-dir data/faces-workspaces
 ```
 
-Group faces by person using embeddings:
+Group repeated faces into people:
 
 ```bash
-uv run image-yolo-faces ./photos --group-by-person
+uv run image-yolo-faces photos/ --group-by-person
 ```
 
-If the clustering is too coarse or too fragmented, tune:
+Tune grouping if the results are too broad or too fragmented:
 
 ```bash
-uv run image-yolo-faces ./photos --group-by-person --person-threshold 0.50
+uv run image-yolo-faces photos/ --group-by-person --person-threshold 0.50
 ```
 
 Useful options:
@@ -60,40 +96,51 @@ Useful options:
 uv run image-yolo-faces --help
 ```
 
-## Web UI
+## Review In The Web UI
 
-Run the review UI against the workspaces root:
+Start the local review app:
 
 ```bash
 uv run image-yolo-faces-web
 ```
 
-The web UI reads and writes the active workspace selected in the browser cookie. The header includes a workspace switcher and a create-workspace form. Workspace transfers on a person page can copy a person into another workspace or move the linked images/faces into another workspace, while leaving the source workspace intact and warning when mixed images are involved.
+Then open the URL printed by the command. The UI starts in the active workspace
+and stores the selected workspace in a browser cookie. Use the workspace menu to
+switch workspaces or create a new one.
 
-For live code reloading while developing:
+The home page shows annotated images first. From there you can:
 
-```bash
-uv run image-yolo-faces-web --reload
-```
+- upload more images by choosing files or dragging them onto the page;
+- open an image to compare the original and annotated versions;
+- name people found in the image;
+- merge a person into another person;
+- delete an imported image from the dataset and filesystem;
+- open the People view to review people across the whole workspace.
 
-The web UI shows the annotated image list first. Click any image to open a review page where you can assign a name to a person, merge that cluster into an existing person, or split selected images into a new person. Person detail pages can also export cropped face images into `exports/<person name>/` within the active workspace. If an annotated preview is missing, the UI regenerates it on demand the first time it is requested.
+Person detail pages let you rename a person, merge them into another person,
+split selected images into a new person, transfer data to another workspace, and
+export cropped face images.
 
-## Benchmark
+## Workspace Transfers
 
-Measure how long it takes to render annotated previews for every image in every workspace:
+Workspace transfers are copy-oriented. They copy linked image and face data into
+the target workspace and do not remove source images or source face records. If a
+person is linked to images that also contain other people, the UI warns you
+before moving linked image data so you can choose whether to copy only the person
+data instead.
+
+## Benchmark Annotated Rendering
+
+Measure how long it takes to render annotated previews for every image in every
+workspace:
 
 ```bash
 uv run python scripts/benchmark_annotated.py
 ```
 
-Use `--workspaces-dir` if your workspaces live somewhere other than `./workspaces`.
-The script prints per-workspace and total timings, including min, p99, and max per-image render times.
-
-The CLI downloads `model.pt` from the model repository on first use, loads it with `ultralytics.YOLO`, and parses the detections with `supervision.Detections.from_ultralytics(...)`, matching the model card example.
-
-When `--group-by-person` is enabled, it uses an InsightFace ArcFace-style embedding model to generate face embeddings and clusters them by cosine similarity.
-
-Annotated images use a stable color per person when grouping is enabled.
+Use `--workspaces-dir` if your workspaces live somewhere other than
+`workspaces/`. The script prints per-workspace and total timings, including min,
+p99, and max per-image render times.
 
 ## Development
 
@@ -101,6 +148,12 @@ Before considering a change done, run the repo checks and fix any failures:
 
 ```bash
 mise check
+```
+
+Run the browser e2e tests for frontend upload, workspace, and collection-view
+changes:
+
+```bash
 pnpm test:e2e
 ```
 

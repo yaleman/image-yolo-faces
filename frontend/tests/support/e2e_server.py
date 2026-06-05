@@ -75,7 +75,7 @@ def seed_workspace(workspace_root: Path) -> Path:
                         "bbox": apple_bbox_secondary,
                         "confidence": 0.91,
                         "person_id": 1,
-                    }
+                    },
                 ],
                 "added_at": 1_000_000_000,
                 "hashes": {"sha256": sha256_file(apple_image)},
@@ -201,7 +201,8 @@ def main() -> None:
     seed_workspace(workspaces_root)
 
     setattr(webui, "scan_image_entry", fake_scan_image_entry)
-    app = webui.create_app(workspaces_root)
+    appclass = webui.App(workspaces_root)
+    app = appclass.create_app()
 
     import uvicorn
 

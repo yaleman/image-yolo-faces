@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import time
 from pathlib import Path
@@ -15,10 +14,6 @@ WORKSPACE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 def resolve_workspaces_root(workspaces_dir: Path | None = None) -> Path:
     if workspaces_dir is not None:
         return workspaces_dir.expanduser().resolve()
-
-    env_value = os.environ.get(WORKSPACES_DIR_ENV)
-    if env_value:
-        return Path(env_value).expanduser().resolve()
 
     return DEFAULT_WORKSPACES_DIR.expanduser().resolve()
 
