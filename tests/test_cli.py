@@ -1,4 +1,3 @@
-from image_yolo_faces.workspaces import resolve_workspaces_root
 from pathlib import Path
 import pytest
 from image_yolo_faces.cli import cli

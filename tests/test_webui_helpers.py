@@ -15,7 +15,6 @@ from image_yolo_faces.workspaces import (
     DEFAULT_WORKSPACE_NAME,
     ensure_workspace_layout,
     normalize_report_media_paths,
-    resolve_workspaces_root,
     validate_workspace_name,
     workspace_exports_dir,
     workspace_photos_dir,
