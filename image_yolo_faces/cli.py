@@ -32,6 +32,7 @@ from .workspaces import (
     uniquify_filename,
     workspace_photos_dir,
     workspace_report_path,
+    WORKSPACES_DIR_ENV,
 )
 
 
@@ -273,6 +274,7 @@ def build_report(
     type=click.Path(path_type=Path, file_okay=False, exists=False),
     default=None,
     show_default=True,
+    envvar=WORKSPACES_DIR_ENV,
     help="Path to the directory that contains workspace folders.",
 )
 @click.option(
@@ -326,6 +328,9 @@ def build_report(
     type=click.FloatRange(min=0.0, max=1.0),
     help="Minimum cosine similarity required to assign a face to an existing person group.",
 )
+@click.option(
+    "--show-config", is_flag=True, help="Show the resolved configuration and exit."
+)
 def cli(
     inputs: Tuple[Path, ...],
     workspaces_dir: Path | None,
@@ -337,14 +342,30 @@ def cli(
     group_by_person: bool,
     embedding_model: str,
     person_threshold: float,
+    show_config: bool,
 ) -> None:
-    if not inputs:
-        raise click.ClickException("Provide at least one image or directory.")
 
     resolved_workspaces_root = resolve_workspaces_root(workspaces_dir)
+    if show_config:
+        click.echo("Configuration:")
+        click.echo(f"  Workspaces root: {resolved_workspaces_root}")
+        click.echo(f"  Workspace name: {workspace_name}")
+        click.echo(f"  Recursive: {recursive}")
+        click.echo(f"  Confidence threshold: {confidence}")
+        click.echo(f"  Model repo: {model_repo}")
+        click.echo(f"  Model file: {model_file}")
+        click.echo(f"  Group by person: {group_by_person}")
+        if group_by_person:
+            click.echo(f"  Embedding model: {embedding_model}")
+            click.echo(f"  Person similarity threshold: {person_threshold}")
+        return
+    if not inputs:
+        raise click.ClickException("Provide at least one image or directory.")
     cleaned_workspace_name = validate_workspace_name(workspace_name)
     ensure_workspace_layout(resolved_workspaces_root, cleaned_workspace_name)
-    report_path = workspace_report_path(resolved_workspaces_root, cleaned_workspace_name)
+    report_path = workspace_report_path(
+        resolved_workspaces_root, cleaned_workspace_name
+    )
 
     model = load_model(model_repo, model_file)
     face_encoder = load_face_encoder(embedding_model) if group_by_person else None

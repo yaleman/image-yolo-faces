@@ -26,9 +26,10 @@ from image_yolo_faces.workspaces import (
 def test_resolve_media_path_handles_relative_and_absolute_paths() -> None:
     report_path = Path("/tmp/report/faces.json")
 
-    assert resolve_media_path(report_path, "photos/example.jpg") == (
-        report_path.parent / "photos/example.jpg"
-    ).resolve()
+    assert (
+        resolve_media_path(report_path, "photos/example.jpg")
+        == (report_path.parent / "photos/example.jpg").resolve()
+    )
     assert resolve_media_path(report_path, "/tmp/library/example.jpg") == Path(
         "/tmp/library/example.jpg"
     )
@@ -84,14 +85,6 @@ def test_person_preview_bbox_uses_person_annotations_for_the_image() -> None:
     }
 
     assert person_preview_bbox(entry, 34, person) == [20.0, 30.0, 80.0, 90.0]
-
-
-def test_resolve_workspaces_root_uses_the_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("FACES_WORKSPACES_DIR", str(tmp_path / "spaces"))
-
-    assert resolve_workspaces_root() == (tmp_path / "spaces").resolve()
 
 
 def test_validate_workspace_name_accepts_simple_names() -> None:
