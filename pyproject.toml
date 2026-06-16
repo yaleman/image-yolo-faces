@@ -14,7 +14,7 @@ dependencies = [
     "onnx<1.22",
     "onnxruntime>=1.24.3",
     "pillow>=11.3.0",
-    "python-multipart>=0.0.27",
+    "python-multipart>=0.0.31",
     "supervision>=0.27.0.post2",
     "ultralytics>=8.4.24",
     "uvicorn>=0.42.0",
