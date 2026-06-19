@@ -11,7 +11,7 @@ dependencies = [
     "insightface>=0.7.3",
     "jinja2>=3.1.6",
     "numpy<3",
-    "onnx<1.22",
+    "onnx<1.23",
     "onnxruntime>=1.24.3",
     "pillow>=11.3.0",
     "python-multipart>=0.0.31",
