@@ -25,7 +25,7 @@ image-yolo-faces = "image_yolo_faces.cli:cli"
 image-yolo-faces-web = "image_yolo_faces.webui:main"
 
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
